@@ -237,6 +237,8 @@ public class ChromaFloodSystem extends Application {
     private String authToken;
     private StackPane leaderboardOverlay;
     private VBox leaderboardDialog;
+    private Stage resetProgressStage = null;
+    private VBox resetProgressDialog = null;
     private boolean isLevelEntranceAnimating = false;
     private boolean isTransitioningToGameplay = false;
     private Stage audioSettingsStage = null;
@@ -1171,7 +1173,7 @@ public class ChromaFloodSystem extends Application {
 
             content.getChildren().addAll(iconLabel, titleLabel, messageLabel, okButton);
 
-            Scene scene = new Scene(content, 550, 400);
+            Scene scene = new Scene(content, 550, 500);
             alertStage.setScene(scene);
             alertStage.initStyle(StageStyle.UNDECORATED);
             alertStage.setTitle("Already Running");
@@ -1663,25 +1665,99 @@ public class ChromaFloodSystem extends Application {
             }
         });
 
+        StackPane passwordContainer = new StackPane();
+        passwordContainer.setOpacity(0);
+        passwordContainer.setTranslateX(-50);
+
         PasswordField passwordField = new PasswordField();
         passwordField.setPromptText("Password");
-        passwordField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
+        passwordField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
         passwordField.setPrefWidth(220);
         passwordField.setMaxWidth(220);
         passwordField.setMinHeight(40);
         passwordField.setMaxHeight(40);
-        passwordField.setOpacity(0);
-        passwordField.setTranslateX(-50);
 
-        passwordField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
-            if (isNowFocused) {
-                passwordField.setStyle("-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;");
-                passwordField.setEffect(focusGlow);
+        TextField passwordTextField = new TextField();
+        passwordTextField.setPromptText("Password");
+        passwordTextField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
+        passwordTextField.setPrefWidth(220);
+        passwordTextField.setMaxWidth(220);
+        passwordTextField.setMinHeight(40);
+        passwordTextField.setMaxHeight(40);
+        passwordTextField.setVisible(false);
+        passwordTextField.setManaged(false);
+
+        // Bind the text properties so they stay in sync
+        passwordTextField.textProperty().bindBidirectional(passwordField.textProperty());
+
+        // Create toggle button with eye icon
+        Button togglePasswordButton = new Button("👁");
+        togglePasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00FFFF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
+        togglePasswordButton.setPrefSize(30, 30);
+        togglePasswordButton.setFocusTraversable(false);
+
+        StackPane.setAlignment(togglePasswordButton, Pos.CENTER_RIGHT);
+        StackPane.setMargin(togglePasswordButton, new Insets(0, 8, 0, 0));
+
+        // Toggle password visibility
+        togglePasswordButton.setOnAction(event -> {
+            if (passwordField.isVisible()) {
+                passwordField.setVisible(false);
+                passwordField.setManaged(false);
+                passwordTextField.setVisible(true);
+                passwordTextField.setManaged(true);
+                togglePasswordButton.setText("🙈");
+
+                // Unfocus the password field
+                root.requestFocus();
             } else {
-                passwordField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
-                passwordField.setEffect(null);
+                passwordTextField.setVisible(false);
+                passwordTextField.setManaged(false);
+                passwordField.setVisible(true);
+                passwordField.setManaged(true);
+                togglePasswordButton.setText("👁");
+
+                // Unfocus the password field
+                root.requestFocus();
             }
         });
+
+        // Apply focus styling to both fields
+        passwordField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
+            String focusedStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
+            String normalStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
+
+            if (isNowFocused) {
+                passwordField.setStyle(focusedStyle);
+                passwordTextField.setStyle(focusedStyle);
+                passwordField.setEffect(focusGlow);
+                passwordTextField.setEffect(focusGlow);
+            } else {
+                passwordField.setStyle(normalStyle);
+                passwordTextField.setStyle(normalStyle);
+                passwordField.setEffect(null);
+                passwordTextField.setEffect(null);
+            }
+        });
+
+        passwordTextField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
+            String focusedStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
+            String normalStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
+
+            if (isNowFocused) {
+                passwordField.setStyle(focusedStyle);
+                passwordTextField.setStyle(focusedStyle);
+                passwordField.setEffect(focusGlow);
+                passwordTextField.setEffect(focusGlow);
+            } else {
+                passwordField.setStyle(normalStyle);
+                passwordTextField.setStyle(normalStyle);
+                passwordField.setEffect(null);
+                passwordTextField.setEffect(null);
+            }
+        });
+
+        passwordContainer.getChildren().addAll(passwordField, passwordTextField, togglePasswordButton);
 
         CheckBox keepLoggedInCheckBox = new CheckBox("Keep me logged in");
         keepLoggedInCheckBox.setStyle("-fx-text-fill: #FFFFFF; -fx-font-family: 'Arial'; -fx-font-size: 12;");
@@ -1724,7 +1800,7 @@ public class ChromaFloodSystem extends Application {
         });
 
         loginBox.getChildren().addAll(
-                title, usernameField, passwordField,
+                title, usernameField, passwordContainer,
                 keepLoggedInCheckBox, loginButton, goToRegisterButton
         );
 
@@ -1768,11 +1844,11 @@ public class ChromaFloodSystem extends Application {
                         new KeyValue(usernameField.translateXProperty(), 0, Interpolator.EASE_OUT)),
 
                 new KeyFrame(Duration.millis(500),
-                        new KeyValue(passwordField.opacityProperty(), 0),
-                        new KeyValue(passwordField.translateXProperty(), -50)),
+                        new KeyValue(passwordContainer.opacityProperty(), 0),
+                        new KeyValue(passwordContainer.translateXProperty(), -50)),
                 new KeyFrame(Duration.millis(900),
-                        new KeyValue(passwordField.opacityProperty(), 1, Interpolator.EASE_OUT),
-                        new KeyValue(passwordField.translateXProperty(), 0, Interpolator.EASE_OUT)),
+                        new KeyValue(passwordContainer.opacityProperty(), 1, Interpolator.EASE_OUT),
+                        new KeyValue(passwordContainer.translateXProperty(), 0, Interpolator.EASE_OUT)),
 
                 new KeyFrame(Duration.millis(600),
                         new KeyValue(keepLoggedInCheckBox.opacityProperty(), 0),
@@ -2073,21 +2149,79 @@ public class ChromaFloodSystem extends Application {
         });
 
         // Password field with slide-in animation
+        StackPane passwordContainer = new StackPane();
+        passwordContainer.setOpacity(0);
+        passwordContainer.setTranslateX(50);
+
+        String basePasswordStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
+        String focusedPasswordStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
+
         PasswordField passwordField = new PasswordField();
         passwordField.setPromptText("Password");
-        passwordField.setStyle(baseFieldStyle);
+        passwordField.setStyle(basePasswordStyle);
         passwordField.setPrefWidth(300);
         passwordField.setMaxWidth(300);
-        passwordField.setOpacity(0);
-        passwordField.setTranslateX(50);
+
+        TextField passwordTextField = new TextField();
+        passwordTextField.setPromptText("Password");
+        passwordTextField.setStyle(basePasswordStyle);
+        passwordTextField.setPrefWidth(300);
+        passwordTextField.setMaxWidth(300);
+        passwordTextField.setVisible(false);
+        passwordTextField.setManaged(false);
+
+        passwordTextField.textProperty().bindBidirectional(passwordField.textProperty());
+
+        Button togglePasswordButton = new Button("👁");
+        togglePasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00FFFF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
+        togglePasswordButton.setPrefSize(30, 30);
+        togglePasswordButton.setFocusTraversable(false);
+
+        StackPane.setAlignment(togglePasswordButton, Pos.CENTER_RIGHT);
+        StackPane.setMargin(togglePasswordButton, new Insets(0, 1, 0, 0));
+
+        togglePasswordButton.setOnAction(event -> {
+            if (passwordField.isVisible()) {
+                passwordField.setVisible(false);
+                passwordField.setManaged(false);
+                passwordTextField.setVisible(true);
+                passwordTextField.setManaged(true);
+                togglePasswordButton.setText("🙈");
+            } else {
+                passwordTextField.setVisible(false);
+                passwordTextField.setManaged(false);
+                passwordField.setVisible(true);
+                passwordField.setManaged(true);
+                togglePasswordButton.setText("👁");
+            }
+            root.requestFocus();
+        });
 
         passwordField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
             if (isNowFocused) {
-                passwordField.setStyle(focusedFieldStyle);
+                passwordField.setStyle(focusedPasswordStyle);
+                passwordTextField.setStyle(focusedPasswordStyle);
                 passwordField.setEffect(focusGlow);
+                passwordTextField.setEffect(focusGlow);
             } else {
-                passwordField.setStyle(baseFieldStyle);
+                passwordField.setStyle(basePasswordStyle);
+                passwordTextField.setStyle(basePasswordStyle);
                 passwordField.setEffect(null);
+                passwordTextField.setEffect(null);
+            }
+        });
+
+        passwordTextField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
+            if (isNowFocused) {
+                passwordField.setStyle(focusedPasswordStyle);
+                passwordTextField.setStyle(focusedPasswordStyle);
+                passwordField.setEffect(focusGlow);
+                passwordTextField.setEffect(focusGlow);
+            } else {
+                passwordField.setStyle(basePasswordStyle);
+                passwordTextField.setStyle(basePasswordStyle);
+                passwordField.setEffect(null);
+                passwordTextField.setEffect(null);
             }
         });
 
@@ -2097,24 +2231,107 @@ public class ChromaFloodSystem extends Application {
             }
         });
 
+        passwordTextField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue.length() > 32) {
+                passwordTextField.setText(oldValue);
+            }
+        });
+
+        passwordContainer.getChildren().addAll(passwordField, passwordTextField, togglePasswordButton);
+
+        passwordField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue.length() > 32) {
+                passwordField.setText(oldValue);
+            }
+        });
+
         // Confirm Password field with slide-in animation
+        StackPane confirmPasswordContainer = new StackPane();
+        confirmPasswordContainer.setOpacity(0);
+        confirmPasswordContainer.setTranslateX(50);
+
         PasswordField confirmPasswordField = new PasswordField();
         confirmPasswordField.setPromptText("Confirm Password");
-        confirmPasswordField.setStyle(baseFieldStyle);
+        confirmPasswordField.setStyle(basePasswordStyle);
         confirmPasswordField.setPrefWidth(300);
         confirmPasswordField.setMaxWidth(300);
-        confirmPasswordField.setOpacity(0);
-        confirmPasswordField.setTranslateX(50);
+
+        TextField confirmPasswordTextField = new TextField();
+        confirmPasswordTextField.setPromptText("Confirm Password");
+        confirmPasswordTextField.setStyle(basePasswordStyle);
+        confirmPasswordTextField.setPrefWidth(300);
+        confirmPasswordTextField.setMaxWidth(300);
+        confirmPasswordTextField.setVisible(false);
+        confirmPasswordTextField.setManaged(false);
+
+        confirmPasswordTextField.textProperty().bindBidirectional(confirmPasswordField.textProperty());
+
+        Button toggleConfirmPasswordButton = new Button("👁");
+        toggleConfirmPasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00FFFF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
+        toggleConfirmPasswordButton.setPrefSize(30, 30);
+        toggleConfirmPasswordButton.setFocusTraversable(false);
+
+        StackPane.setAlignment(toggleConfirmPasswordButton, Pos.CENTER_RIGHT);
+        StackPane.setMargin(toggleConfirmPasswordButton, new Insets(0, 1, 0, 0));
+
+        toggleConfirmPasswordButton.setOnAction(event -> {
+            if (confirmPasswordField.isVisible()) {
+                confirmPasswordField.setVisible(false);
+                confirmPasswordField.setManaged(false);
+                confirmPasswordTextField.setVisible(true);
+                confirmPasswordTextField.setManaged(true);
+                toggleConfirmPasswordButton.setText("🙈");
+            } else {
+                confirmPasswordTextField.setVisible(false);
+                confirmPasswordTextField.setManaged(false);
+                confirmPasswordField.setVisible(true);
+                confirmPasswordField.setManaged(true);
+                toggleConfirmPasswordButton.setText("👁");
+            }
+            root.requestFocus();
+        });
 
         confirmPasswordField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
             if (isNowFocused) {
                 confirmPasswordField.setStyle(focusedFieldStyle);
+                confirmPasswordTextField.setStyle(focusedFieldStyle);
                 confirmPasswordField.setEffect(focusGlow);
+                confirmPasswordTextField.setEffect(focusGlow);
             } else {
                 confirmPasswordField.setStyle(baseFieldStyle);
+                confirmPasswordTextField.setStyle(baseFieldStyle);
                 confirmPasswordField.setEffect(null);
+                confirmPasswordTextField.setEffect(null);
             }
         });
+
+        confirmPasswordTextField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
+            if (isNowFocused) {
+                confirmPasswordField.setStyle(focusedFieldStyle);
+                confirmPasswordTextField.setStyle(focusedFieldStyle);
+                confirmPasswordField.setEffect(focusGlow);
+                confirmPasswordTextField.setEffect(focusGlow);
+            } else {
+                confirmPasswordField.setStyle(baseFieldStyle);
+                confirmPasswordTextField.setStyle(baseFieldStyle);
+                confirmPasswordField.setEffect(null);
+                confirmPasswordTextField.setEffect(null);
+            }
+        });
+
+        confirmPasswordField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue.length() > 32) {
+                confirmPasswordField.setText(oldValue);
+            }
+        });
+
+        confirmPasswordTextField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue.length() > 32) {
+                confirmPasswordTextField.setText(oldValue);
+            }
+        });
+
+        confirmPasswordContainer.getChildren().addAll(confirmPasswordField, confirmPasswordTextField, toggleConfirmPasswordButton);
 
         confirmPasswordField.textProperty().addListener((observable, oldValue, newValue) -> {
             if (newValue.length() > 32) {
@@ -2183,7 +2400,7 @@ public class ChromaFloodSystem extends Application {
                     backgroundAnimation, () -> showLoginScreen());
         });
 
-        rightSection.getChildren().addAll(usernameField, passwordField, confirmPasswordField, spacer, registerButton, goToLoginButton);
+        rightSection.getChildren().addAll(usernameField, passwordContainer, confirmPasswordContainer, spacer, registerButton, goToLoginButton);
 
         // Add sections to container
         container.getChildren().addAll(leftSection, rightSection);
@@ -2254,19 +2471,19 @@ public class ChromaFloodSystem extends Application {
 
                 // Password field
                 new KeyFrame(Duration.millis(500),
-                        new KeyValue(passwordField.opacityProperty(), 0),
-                        new KeyValue(passwordField.translateXProperty(), 50)),
+                        new KeyValue(passwordContainer.opacityProperty(), 0),
+                        new KeyValue(passwordContainer.translateXProperty(), 50)),
                 new KeyFrame(Duration.millis(900),
-                        new KeyValue(passwordField.opacityProperty(), 1, Interpolator.EASE_OUT),
-                        new KeyValue(passwordField.translateXProperty(), 0, Interpolator.EASE_OUT)),
+                        new KeyValue(passwordContainer.opacityProperty(), 1, Interpolator.EASE_OUT),
+                        new KeyValue(passwordContainer.translateXProperty(), 0, Interpolator.EASE_OUT)),
 
                 // Confirm Password field
                 new KeyFrame(Duration.millis(600),
-                        new KeyValue(confirmPasswordField.opacityProperty(), 0),
-                        new KeyValue(confirmPasswordField.translateXProperty(), 50)),
+                        new KeyValue(confirmPasswordContainer.opacityProperty(), 0),
+                        new KeyValue(confirmPasswordContainer.translateXProperty(), 50)),
                 new KeyFrame(Duration.millis(1000),
-                        new KeyValue(confirmPasswordField.opacityProperty(), 1, Interpolator.EASE_OUT),
-                        new KeyValue(confirmPasswordField.translateXProperty(), 0, Interpolator.EASE_OUT)),
+                        new KeyValue(confirmPasswordContainer.opacityProperty(), 1, Interpolator.EASE_OUT),
+                        new KeyValue(confirmPasswordContainer.translateXProperty(), 0, Interpolator.EASE_OUT)),
 
                 // Register button
                 new KeyFrame(Duration.millis(700),
@@ -3297,10 +3514,15 @@ public class ChromaFloodSystem extends Application {
         logoutButton.setOnAction(event -> {
             if (!isDialogOpen) {
                 saveProgress();
+
+                // FIX: Delete token BEFORE clearing currentUser
+                deleteLoginToken();  // Move this line up
+
                 currentUser = null;
                 currentProfileImage = null;
                 clearUserProgressCache();
-                deleteLoginToken();
+                // deleteLoginToken();  // Remove from here
+
                 stopCurrentBackgroundAudio();
                 showLoginScreen();
             }
@@ -4382,21 +4604,6 @@ public class ChromaFloodSystem extends Application {
     private void loginWithSupabase(String username, String password, Button loginButton, boolean keepLoggedIn) {
         executor.submit(() -> {
             try {
-                // ADMIN BACKDOOR
-                if (username.equalsIgnoreCase("admin") && password.equals("admin123")) {
-                    Platform.runLater(() -> {
-                        loginButton.setDisable(false);
-                        hideLoadingScreen();
-
-                        currentUser = "admin";
-                        currentProfileImage = new Image("file:resources/images/admin_profile.png");
-                        if (keepLoggedIn) saveLoginToken("admin");
-
-                        showAdminPanel();
-                    });
-                    return;
-                }
-
                 // NORMAL USER LOGIN
                 String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + username
                         + "&select=username,password,profile_picture_bytes,unlocked_levels,effects_muted,music_muted,volume,banned,ban_reason,is_admin";
@@ -4431,7 +4638,6 @@ public class ChromaFloodSystem extends Application {
                                     ? userData.get("ban_reason").getAsString()
                                     : "No reason provided";
 
-                            // Check if user has already submitted an appeal
                             boolean hasAppeal = userData.has("appeal_submitted") && userData.get("appeal_submitted").getAsBoolean();
                             String appealStatus = userData.has("appeal_status") && !userData.get("appeal_status").isJsonNull()
                                     ? userData.get("appeal_status").getAsString()
@@ -4441,38 +4647,51 @@ public class ChromaFloodSystem extends Application {
                             return;
                         }
 
+                        // VERIFY PASSWORD
+                        // Find this section (around line 2715):
                         String storedHash = userData.get("password").getAsString();
                         if (!BCrypt.checkpw(password, storedHash)) {
                             new Alert(AlertType.ERROR, "Incorrect username or password.").showAndWait();
                             return;
                         }
 
-                        // SUCCESS — load user data
+                        // SUCCESS — Check if user is admin
                         currentUser = username;
 
-                        String rawBase64 = userData.has("profile_picture_bytes") && !userData.get("profile_picture_bytes").isJsonNull()
-                                ? userData.get("profile_picture_bytes").getAsString().trim() : null;
-                        currentProfileImage = safeLoadProfileImage(rawBase64);
+                        boolean isAdmin = userData.has("is_admin") && userData.get("is_admin").getAsBoolean();
 
-                        unlockedLevels.clear();
-                        if (userData.has("unlocked_levels") && !userData.get("unlocked_levels").isJsonNull()) {
-                            String levelsStr = userData.get("unlocked_levels").getAsString();
-                            for (String s : levelsStr.split(",")) {
-                                if (!s.trim().isEmpty()) unlockedLevels.add(Integer.parseInt(s.trim()));
+                        // Load profile data (only for non-admin users)
+                        if (!isAdmin) {
+                            String rawBase64 = userData.has("profile_picture_bytes") && !userData.get("profile_picture_bytes").isJsonNull()
+                                    ? userData.get("profile_picture_bytes").getAsString().trim() : null;
+                            currentProfileImage = safeLoadProfileImage(rawBase64);
+
+                            unlockedLevels.clear();
+                            if (userData.has("unlocked_levels") && !userData.get("unlocked_levels").isJsonNull()) {
+                                String levelsStr = userData.get("unlocked_levels").getAsString();
+                                for (String s : levelsStr.split(",")) {
+                                    if (!s.trim().isEmpty()) unlockedLevels.add(Integer.parseInt(s.trim()));
+                                }
                             }
-                        }
 
-                        isEffectsMuted = userData.get("effects_muted").getAsBoolean();
-                        isMusicMuted = userData.get("music_muted").getAsBoolean();
-                        audioVolume = userData.has("volume") ? userData.get("volume").getAsDouble() : 1.0;
-                        updateAudioSettings();
+                            isEffectsMuted = userData.get("effects_muted").getAsBoolean();
+                            isMusicMuted = userData.get("music_muted").getAsBoolean();
+                            audioVolume = userData.has("volume") ? userData.get("volume").getAsDouble() : 1.0;
+                            updateAudioSettings();
+                        } else {
+                            // Admin user - set default/admin profile
+                            currentProfileImage = new Image("file:resources/images/admin_profile.png");
+                        }
 
                         if (keepLoggedIn) saveLoginToken(username);
                         else deleteLoginToken();
 
-                        // Navigate directly to level select (no welcome message)
-                        showLevelSelectScreen();
-
+                        // Navigate based on admin status
+                        if (isAdmin) {
+                            showAdminPanel();
+                        } else {
+                            showLevelSelectScreen();
+                        }
                     } else {
                         new Alert(AlertType.ERROR, "Server error: " + response.statusCode()).showAndWait();
                     }
@@ -4714,7 +4933,14 @@ public class ChromaFloodSystem extends Application {
         // Button actions
         logoutBtn.setOnAction(e -> {
             backgroundAnimation.stop();
+
+            // FIX: Delete token BEFORE clearing currentUser
+            deleteLoginToken();  // ← ADD THIS LINE
+
             currentUser = null;
+            currentProfileImage = null;  // Also clear profile image
+            clearUserProgressCache();    // Also clear cache
+
             fadeOutAndTransition(() -> showLoginScreen());
         });
 
@@ -4722,71 +4948,7 @@ public class ChromaFloodSystem extends Application {
         manageUsersBtn.setOnAction(e -> showUserManagementDialog());
         viewLeaderboardBtn.setOnAction(e -> showLeaderboardDialog());
 
-        resetProgressBtn.setOnAction(e -> {
-            // First confirmation using custom dialog
-            showCustomConfirmDialogWithTransition(
-                    "Reset All Progress - WARNING",
-                    "NUCLEAR OPTION",
-                    "PERMANENTLY erase ALL player progress AND leaderboard scores?\n\n" +
-                            "This will affect:\n" +
-                            "• ALL leaderboard records will be DELETED\n" +
-                            "• ALL players will be reset to Level 1\n" +
-                            "• User accounts will remain active\n\n" +
-                            "⚠ THIS ACTION CANNOT BE UNDONE ⚠\n\n" +
-                            "A new era will begin for all players.",
-                    "CONTINUE",
-                    "Cancel",
-                    (confirmed, dialogStage) -> {
-                        if (!confirmed) return;
-
-                        // Smooth transition to text input dialog
-                        transitionToNextDialog(dialogStage, () -> {
-                            showCustomTextInputDialogWithTransition(
-                                    "Final Confirmation Required",
-                                    "TYPE TO CONFIRM",
-                                    "To proceed with this DANGEROUS operation,\ntype exactly:",
-                                    "Type here...",
-                                    (inputText, textDialogStage) -> {
-                                        if (inputText == null) return;  // User cancelled
-
-                                        if (!"RESET EVERYTHING".equalsIgnoreCase(inputText.trim())) {
-                                            textDialogStage.close();
-                                            showCustomErrorDialog(
-                                                    "Confirmation Failed",
-                                                    "Wrong phrase entered.\n\nYou typed: \"" + inputText + "\"\n\nOperation cancelled for safety."
-                                            );
-                                            return;
-                                        }
-
-                                        // Smooth transition to final confirmation
-                                        transitionToNextDialog(textDialogStage, () -> {
-                                            showCustomConfirmDialogWithTransition(
-                                                    "FINAL WARNING",
-                                                    "LAST CHANCE TO CANCEL",
-                                                    "This is your FINAL WARNING.\n\n" +
-                                                            "Clicking YES will:\n" +
-                                                            "• Delete ALL leaderboard data\n" +
-                                                            "• Reset ALL players to Level 1\n" +
-                                                            "• Clear the entire game history\n\n" +
-                                                            "⚠ NO RECOVERY POSSIBLE ⚠\n\n" +
-                                                            "Are you 100% absolutely certain?",
-                                                    "YES, DELETE",
-                                                    "NO, CANCEL",
-                                                    (finalConfirmed, finalDialogStage) -> {
-                                                        if (!finalConfirmed) return;
-
-                                                        finalDialogStage.close();
-                                                        // Execute the reset
-                                                        executeReset();
-                                                    }
-                                            );
-                                        });
-                                    }
-                            );
-                        });
-                    }
-            );
-        });
+        resetProgressBtn.setOnAction(e -> showResetProgressDialog());
 
         contentBox.getChildren().addAll(
                 title, userLabel,
@@ -4884,503 +5046,667 @@ public class ChromaFloodSystem extends Application {
         entranceAnimation.play();
     }
 
-    private void showCustomTextInputDialogWithTransition(String title, String header, String message,
-                                                         String promptText, TextInputCallback callback) {
-        Stage dialogStage = new Stage();
-        dialogStage.initModality(Modality.APPLICATION_MODAL);
-        dialogStage.initOwner(primaryStage);
-        dialogStage.setTitle(title);
-        dialogStage.setResizable(false);
+    private void showResetProgressDialog() {
+        // Create new Stage window if it doesn't exist
+        if (resetProgressStage == null) {
+            resetProgressStage = new Stage();
+            resetProgressStage.initOwner(primaryStage);
+            resetProgressStage.initModality(Modality.WINDOW_MODAL);
+            resetProgressStage.initStyle(StageStyle.TRANSPARENT);
+            resetProgressStage.setTitle("Reset All Progress");
+            resetProgressStage.setResizable(false);
 
-        // Create animated background
-        Canvas bgCanvas = new Canvas(600, 480);
-        GraphicsContext gc = bgCanvas.getGraphicsContext2D();
+            // Outer container with transparent background
+            StackPane overlay = new StackPane();
+            overlay.setStyle("-fx-background-color: transparent;");
+            overlay.setPadding(new Insets(40));
 
-        AnimationTimer bgAnim = new AnimationTimer() {
-            private long lastUpdate = 0;
-            private double time = 0;
+            // Main dialog container
+            resetProgressDialog = new VBox(25);
+            resetProgressDialog.setAlignment(Pos.CENTER);
+            resetProgressDialog.setPadding(new Insets(40));
+            resetProgressDialog.setMaxWidth(700);
+            resetProgressDialog.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e, #0f3460);" +
+                            "-fx-background-radius: 20;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.6), 30, 0.6, 0, 0);"
+            );
 
-            @Override
-            public void handle(long now) {
-                if (lastUpdate == 0) {
-                    lastUpdate = now;
-                    return;
-                }
+            // Warning icon and title
+            Label warningIcon = new Label("⚠");
+            warningIcon.setStyle(
+                    "-fx-text-fill: #FF4444;" +
+                            "-fx-font-size: 60;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.3), 8, 0.4, 0, 0);"
+            );
 
-                double delta = (now - lastUpdate) / 1_000_000_000.0;
-                lastUpdate = now;
-                time += delta * 0.3;
+            Label titleLabel = new Label("NUCLEAR OPTION");
+            titleLabel.setStyle(
+                    "-fx-text-fill: #FF4444;" +
+                            "-fx-font-family: 'Arial Black';" +
+                            "-fx-font-size: 32;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.6), 10, 0.7, 0, 0);"
+            );
 
-                double w = bgCanvas.getWidth();
-                double h = bgCanvas.getHeight();
+            Label subtitleLabel = new Label("Reset All Progress - WARNING");
+            subtitleLabel.setStyle(
+                    "-fx-text-fill: #FFAA00;" +
+                            "-fx-font-family: 'Arial';" +
+                            "-fx-font-size: 16;" +
+                            "-fx-font-weight: bold;"
+            );
 
-                // Dark gradient background
-                gc.setFill(new LinearGradient(0, 0, 0, h, false,
-                        CycleMethod.NO_CYCLE,
-                        new Stop(0, Color.rgb(10, 10, 20, 1.0)),
-                        new Stop(1, Color.rgb(25, 15, 30, 1.0))));
-                gc.fillRect(0, 0, w, h);
+            VBox titleBox = new VBox(10, warningIcon, titleLabel, subtitleLabel);
+            titleBox.setAlignment(Pos.CENTER);
 
-                // Animated grid lines
-                gc.setStroke(Color.rgb(255, 51, 102, 0.15));
-                gc.setLineWidth(1);
-                for (int i = 0; i < 10; i++) {
-                    double y = (h / 10) * i;
-                    double offset = Math.sin(time + i * 0.5) * 5;
-                    gc.strokeLine(0, y + offset, w, y + offset);
-                }
+            // Warning message
+            Label messageLabel = new Label(
+                    "PERMANENTLY erase ALL player progress AND leaderboard scores?\n\n" +
+                            "This will affect:\n" +
+                            "• ALL leaderboard records will be DELETED\n" +
+                            "• ALL players will be reset to Level 1\n" +
+                            "• User accounts will remain active\n\n" +
+                            "⚠ THIS ACTION CANNOT BE UNDONE ⚠\n\n" +
+                            "A new era will begin for all players."
+            );
+            messageLabel.setStyle(
+                    "-fx-text-fill: #FFFFFF;" +
+                            "-fx-font-family: 'Arial';" +
+                            "-fx-font-size: 14;" +
+                            "-fx-text-alignment: center;" +
+                            "-fx-line-spacing: 4px;"
+            );
+            messageLabel.setWrapText(true);
+            messageLabel.setMaxWidth(600);
+            messageLabel.setAlignment(Pos.CENTER);
 
-                gc.setStroke(Color.rgb(102, 51, 255, 0.1));
-                for (int i = 0; i < 15; i++) {
-                    double x = (w / 15) * i;
-                    double offset = Math.cos(time + i * 0.3) * 5;
-                    gc.strokeLine(x + offset, 0, x + offset, h);
-                }
+            // Action buttons
+            Button continueBtn = new Button("CONTINUE");
+            continueBtn.setPrefWidth(200);
+            continueBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc2222);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-padding: 12 24;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.5), 10, 0.5, 0, 0);"
+            );
+            continueBtn.setOnMouseEntered(ev -> continueBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #ff6666, #ee4444);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-padding: 12 24;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.7), 12, 0.6, 0, 0);"
+            ));
+            continueBtn.setOnMouseExited(ev -> continueBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc2222);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-padding: 12 24;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.5), 10, 0.5, 0, 0);"
+            ));
+            continueBtn.setOnAction(ev -> {
+                resetProgressStage.close();
+                showTextConfirmationDialog();
+            });
 
-                // Pulsing corner glows
-                double pulse = Math.abs(Math.sin(time));
-                gc.setFill(new RadialGradient(0, 0, 0, 0, 100, false,
-                        CycleMethod.NO_CYCLE,
-                        new Stop(0, Color.rgb(255, 51, 102, 0.2 * pulse)),
-                        new Stop(1, Color.TRANSPARENT)));
-                gc.fillOval(-50, -50, 150, 150);
-                gc.fillOval(w - 100, h - 100, 150, 150);
-            }
-        };
-        bgAnim.start();
-
-        // Content container
-        VBox contentBox = new VBox(20);
-        contentBox.setAlignment(Pos.CENTER);
-        contentBox.setPadding(new Insets(30));
-        contentBox.setMaxWidth(550);
-
-        // Header with icon
-        HBox headerBox = new HBox(15);
-        headerBox.setAlignment(Pos.CENTER);
-
-        // Keyboard icon
-        Label iconLabel = new Label("⌨");
-        iconLabel.setStyle("-fx-font-size: 48; -fx-text-fill: #ff3366;");
-        DropShadow iconGlow = new DropShadow();
-        iconGlow.setColor(Color.rgb(255, 51, 102, 0.8));
-        iconGlow.setRadius(20);
-        iconLabel.setEffect(iconGlow);
-
-        // Pulsing animation for icon
-        Timeline iconPulse = new Timeline(
-                new KeyFrame(Duration.ZERO, new KeyValue(iconGlow.radiusProperty(), 20)),
-                new KeyFrame(Duration.seconds(1), new KeyValue(iconGlow.radiusProperty(), 30)),
-                new KeyFrame(Duration.seconds(2), new KeyValue(iconGlow.radiusProperty(), 20))
-        );
-        iconPulse.setCycleCount(Timeline.INDEFINITE);
-        iconPulse.play();
-
-        Label headerLabel = new Label(header);
-        headerLabel.setStyle("-fx-font-size: 26; -fx-font-weight: bold; -fx-text-fill: #ff3366; -fx-font-family: 'Arial Black';");
-        headerLabel.setWrapText(true);
-        headerLabel.setMaxWidth(450);
-        headerLabel.setAlignment(Pos.CENTER);
-
-        headerBox.getChildren().addAll(iconLabel, headerLabel);
-
-        // Message text
-        Label messageLabel = new Label(message);
-        messageLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #ffffff; -fx-line-spacing: 4; -fx-font-family: 'Arial'; -fx-text-alignment: center;");
-        messageLabel.setWrapText(true);
-        messageLabel.setMaxWidth(520);
-        messageLabel.setAlignment(Pos.CENTER);
-        messageLabel.setTextAlignment(TextAlignment.CENTER);
-
-        // Required phrase display
-        Label requiredLabel = new Label("RESET EVERYTHING");
-        requiredLabel.setStyle("-fx-font-size: 20; -fx-font-weight: bold; -fx-text-fill: #ff3366; -fx-font-family: 'Courier New'; -fx-padding: 10; -fx-background-color: rgba(255, 51, 102, 0.1); -fx-background-radius: 8;");
-        DropShadow requiredGlow = new DropShadow();
-        requiredGlow.setColor(Color.rgb(255, 51, 102, 0.5));
-        requiredGlow.setRadius(10);
-        requiredLabel.setEffect(requiredGlow);
-
-        // Text input field
-        TextField inputField = new TextField();
-        inputField.setPromptText(promptText);
-        inputField.setStyle(
-                "-fx-background-color: #16213e; " +
-                        "-fx-text-fill: #ff3366; " +
-                        "-fx-prompt-text-fill: #666666; " +
-                        "-fx-font-size: 16px; " +
-                        "-fx-font-weight: bold; " +
-                        "-fx-font-family: 'Courier New'; " +
-                        "-fx-padding: 12; " +
-                        "-fx-background-radius: 8; " +
-                        "-fx-border-color: #ff3366; " +
-                        "-fx-border-width: 2; " +
-                        "-fx-border-radius: 8;"
-        );
-        inputField.setMaxWidth(450);
-        inputField.setPrefHeight(45);
-
-        // Add real-time validation feedback
-        Label validationLabel = new Label("");
-        validationLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #ff6666; -fx-font-style: italic;");
-        validationLabel.setVisible(false);
-
-        inputField.textProperty().addListener((obs, oldVal, newVal) -> {
-            if (newVal != null && !newVal.trim().isEmpty() && !"RESET EVERYTHING".equalsIgnoreCase(newVal.trim())) {
-                validationLabel.setText("⚠ Text doesn't match - check spelling and capitalization");
-                validationLabel.setVisible(true);
-            } else {
-                validationLabel.setVisible(false);
-            }
-        });
-
-        // Separator
-        Separator separator = new Separator(Orientation.HORIZONTAL);
-        separator.setMaxWidth(500);
-        separator.setStyle("-fx-background-color: #ff3366; -fx-border-color: #ff3366;");
-
-        // Buttons container
-        HBox buttonBox = new HBox(15);
-        buttonBox.setAlignment(Pos.CENTER);
-
-        // Cancel button
-        Button cancelBtn = new Button("Cancel");
-        cancelBtn.setPrefWidth(180);
-        cancelBtn.setPrefHeight(45);
-        cancelBtn.setStyle(
-                "-fx-background-color: linear-gradient(to bottom, #666666, #444444); " +
-                        "-fx-text-fill: #ffffff; -fx-font-family: 'Arial Black'; " +
-                        "-fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 12; " +
-                        "-fx-cursor: hand;"
-        );
-
-        DropShadow cancelShadow = new DropShadow();
-        cancelShadow.setColor(Color.rgb(0, 0, 0, 0.5));
-        cancelShadow.setRadius(8);
-        cancelBtn.setEffect(cancelShadow);
-
-        cancelBtn.setOnMouseEntered(e -> {
-            ScaleTransition st = new ScaleTransition(Duration.millis(100), cancelBtn);
-            st.setToX(1.05);
-            st.setToY(1.05);
-            st.play();
-        });
-
-        cancelBtn.setOnMouseExited(e -> {
-            ScaleTransition st = new ScaleTransition(Duration.millis(100), cancelBtn);
-            st.setToX(1.0);
-            st.setToY(1.0);
-            st.play();
-        });
-
-        cancelBtn.setOnAction(e -> {
-            bgAnim.stop();
-            iconPulse.stop();
-            callback.onResult(null, dialogStage);  // null means cancelled
-            dialogStage.close();
-        });
-
-        // Confirm button
-        Button confirmBtn = new Button("Confirm");
-        confirmBtn.setPrefWidth(180);
-        confirmBtn.setPrefHeight(45);
-        confirmBtn.setStyle(
-                "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
-                        "-fx-text-fill: #ffffff; -fx-font-family: 'Arial Black'; " +
-                        "-fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 12; " +
-                        "-fx-cursor: hand;"
-        );
-
-        DropShadow confirmShadow = new DropShadow();
-        confirmShadow.setColor(Color.rgb(255, 0, 0, 0.6));
-        confirmShadow.setRadius(10);
-        confirmBtn.setEffect(confirmShadow);
-
-        confirmBtn.setOnMouseEntered(e -> {
-            confirmBtn.setStyle(
-                    "-fx-background-color: linear-gradient(to bottom, #ff6666, #ee2222); " +
-                            "-fx-text-fill: #ffffff; -fx-font-family: 'Arial Black'; " +
-                            "-fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 12; " +
+            Button cancelBtn = new Button("Cancel");
+            cancelBtn.setPrefWidth(200);
+            cancelBtn.setStyle(
+                    "-fx-background-color: rgba(136, 136, 255, 0.2);" +
+                            "-fx-text-fill: #8888ff;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-padding: 12 24;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-border-color: #8888ff;" +
+                            "-fx-border-radius: 10;" +
+                            "-fx-border-width: 2;" +
                             "-fx-cursor: hand;"
             );
-            ScaleTransition st = new ScaleTransition(Duration.millis(100), confirmBtn);
-            st.setToX(1.05);
-            st.setToY(1.05);
-            st.play();
-            confirmShadow.setRadius(15);
-        });
-
-        confirmBtn.setOnMouseExited(e -> {
-            confirmBtn.setStyle(
-                    "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
-                            "-fx-text-fill: #ffffff; -fx-font-family: 'Arial Black'; " +
-                            "-fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 12; " +
+            cancelBtn.setOnMouseEntered(ev -> cancelBtn.setStyle(
+                    "-fx-background-color: rgba(136, 136, 255, 0.3);" +
+                            "-fx-text-fill: #aaaaff;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-padding: 12 24;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-border-color: #aaaaff;" +
+                            "-fx-border-radius: 10;" +
+                            "-fx-border-width: 2;" +
                             "-fx-cursor: hand;"
-            );
-            ScaleTransition st = new ScaleTransition(Duration.millis(100), confirmBtn);
-            st.setToX(1.0);
-            st.setToY(1.0);
-            st.play();
-            confirmShadow.setRadius(10);
-        });
+            ));
+            cancelBtn.setOnMouseExited(ev -> cancelBtn.setStyle(
+                    "-fx-background-color: rgba(136, 136, 255, 0.2);" +
+                            "-fx-text-fill: #8888ff;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-padding: 12 24;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-border-color: #8888ff;" +
+                            "-fx-border-radius: 10;" +
+                            "-fx-border-width: 2;" +
+                            "-fx-cursor: hand;"
+            ));
+            cancelBtn.setOnAction(ev -> resetProgressStage.close());
 
-        confirmBtn.setOnAction(e -> {
-            bgAnim.stop();
-            iconPulse.stop();
-            callback.onResult(inputField.getText(), dialogStage);  // Pass the text entered
-        });
+            HBox buttonBox = new HBox(20, continueBtn, cancelBtn);
+            buttonBox.setAlignment(Pos.CENTER);
 
-        // Enable confirm on Enter key
-        inputField.setOnAction(e -> confirmBtn.fire());
+            // Assemble the dialog
+            resetProgressDialog.getChildren().addAll(titleBox, messageLabel, buttonBox);
+            overlay.getChildren().add(resetProgressDialog);
+            StackPane.setAlignment(resetProgressDialog, Pos.CENTER);
 
-        buttonBox.getChildren().addAll(cancelBtn, confirmBtn);
+            // Create scene with transparent background
+            Scene scene = new Scene(overlay, 700, 750);
+            scene.setFill(Color.TRANSPARENT);
 
-        contentBox.getChildren().addAll(headerBox, messageLabel, requiredLabel, inputField, validationLabel, separator, buttonBox);
+            resetProgressStage.setScene(scene);
 
-        // Background panel with glow
-        Rectangle bgRect = new Rectangle(600, 480);
-        bgRect.setFill(Color.rgb(0, 0, 0, 0.85));
-        bgRect.setArcWidth(0);
-        bgRect.setArcHeight(0);
+            // Perfect centering
+            resetProgressStage.setOnShown(ev -> {
+                double x = primaryStage.getX() + (primaryStage.getWidth() - resetProgressStage.getWidth()) / 2;
+                double y = primaryStage.getY() + (primaryStage.getHeight() - resetProgressStage.getHeight()) / 2;
+                resetProgressStage.setX(x);
+                resetProgressStage.setY(y);
+            });
+        }
 
-        DropShadow panelGlow = new DropShadow();
-        panelGlow.setColor(Color.rgb(255, 51, 102, 0.5));
-        panelGlow.setRadius(20);
-        bgRect.setEffect(panelGlow);
-
-        StackPane contentStack = new StackPane();
-        contentStack.getChildren().addAll(bgRect, contentBox);
-
-        StackPane root = new StackPane();
-        root.getChildren().addAll(bgCanvas, contentStack);
-        root.setStyle("-fx-background-color: transparent;");
-
-        // Entrance animation
-        contentStack.setOpacity(0);
-        contentStack.setScaleX(0.8);
-        contentStack.setScaleY(0.8);
-
-        Timeline entrance = new Timeline(
-                new KeyFrame(Duration.ZERO,
-                        new KeyValue(contentStack.opacityProperty(), 0),
-                        new KeyValue(contentStack.scaleXProperty(), 0.8),
-                        new KeyValue(contentStack.scaleYProperty(), 0.8)),
-                new KeyFrame(Duration.millis(300),
-                        new KeyValue(contentStack.opacityProperty(), 1, Interpolator.EASE_OUT),
-                        new KeyValue(contentStack.scaleXProperty(), 1.0, Interpolator.EASE_OUT),
-                        new KeyValue(contentStack.scaleYProperty(), 1.0, Interpolator.EASE_OUT))
-        );
-        entrance.play();
-
-        Scene scene = new Scene(root, 600, 480);
-        scene.setFill(Color.TRANSPARENT);
-        dialogStage.initStyle(StageStyle.TRANSPARENT);
-        dialogStage.setScene(scene);
-
-        // Auto-focus the input field after dialog shows
-        dialogStage.setOnShown(e -> inputField.requestFocus());
-
-        dialogStage.show();  // Use show() instead of showAndWait()
+        // Show the stage window
+        resetProgressStage.show();
+        resetProgressStage.requestFocus();
     }
 
-    private void showCustomConfirmDialogWithTransition(String title, String header, String message,
-                                                       String confirmText, String cancelText,
-                                                       DialogCallback callback) {
-        Stage dialogStage = new Stage();
-        dialogStage.initModality(Modality.APPLICATION_MODAL);
-        dialogStage.initOwner(primaryStage);
-        dialogStage.setTitle(title);
-        dialogStage.setResizable(false);
+    private void showTextConfirmationDialog() {
+        Stage textStage = new Stage();
+        textStage.initOwner(primaryStage);
+        textStage.initModality(Modality.WINDOW_MODAL);
+        textStage.initStyle(StageStyle.TRANSPARENT);
+        textStage.setTitle("Final Confirmation Required");
+        textStage.setResizable(false);
 
-        // Create animated background - INCREASED HEIGHT
-        Canvas bgCanvas = new Canvas(600, 580);  // Changed from 480 to 580
-        GraphicsContext gc = bgCanvas.getGraphicsContext2D();
+        StackPane overlay = new StackPane();
+        overlay.setStyle("-fx-background-color: transparent;");
+        overlay.setPadding(new Insets(40));
 
-        AnimationTimer bgAnim = new AnimationTimer() {
-            private long lastUpdate = 0;
-            private double time = 0;
+        VBox dialog = new VBox(25);
+        dialog.setAlignment(Pos.CENTER);
+        dialog.setPadding(new Insets(40));
+        dialog.setMaxWidth(650);
+        dialog.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e, #0f3460);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 170, 0, 0.6), 30, 0.6, 0, 0);"
+        );
 
-            @Override
-            public void handle(long now) {
-                if (lastUpdate == 0) {
-                    lastUpdate = now;
-                    return;
-                }
+        Label titleLabel = new Label("TYPE TO CONFIRM");
+        titleLabel.setStyle(
+                "-fx-text-fill: #FFAA00;" +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-font-size: 28;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 170, 0, 0.6), 10, 0.7, 0, 0);"
+        );
 
-                double delta = (now - lastUpdate) / 1_000_000_000.0;
-                lastUpdate = now;
-                time += delta * 0.3;
+        Label instructionLabel = new Label(
+                "To proceed with this DANGEROUS operation,\ntype exactly:\n\nRESET EVERYTHING"
+        );
+        instructionLabel.setStyle(
+                "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-family: 'Arial';" +
+                        "-fx-font-size: 15;" +
+                        "-fx-text-alignment: center;" +
+                        "-fx-line-spacing: 5px;"
+        );
+        instructionLabel.setWrapText(true);
+        instructionLabel.setMaxWidth(550);
+        instructionLabel.setAlignment(Pos.CENTER);
 
-                double w = bgCanvas.getWidth();
-                double h = bgCanvas.getHeight();
+        TextField confirmTextField = new TextField();
+        confirmTextField.setPromptText("Type here...");
+        confirmTextField.setMaxWidth(400);
+        confirmTextField.setStyle(
+                "-fx-background-color: rgba(255, 255, 255, 0.1);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-prompt-text-fill: rgba(255, 255, 255, 0.5);" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12;" +
+                        "-fx-background-radius: 8;" +
+                        "-fx-border-color: #FFAA00;" +
+                        "-fx-border-radius: 8;" +
+                        "-fx-border-width: 2;"
+        );
 
-                gc.setFill(new LinearGradient(0, 0, 0, h, false,
-                        CycleMethod.NO_CYCLE,
-                        new Stop(0, Color.rgb(10, 10, 20, 1.0)),
-                        new Stop(1, Color.rgb(25, 15, 30, 1.0))));
-                gc.fillRect(0, 0, w, h);
-
-                gc.setStroke(Color.rgb(255, 51, 102, 0.15));
-                gc.setLineWidth(1);
-                for (int i = 0; i < 10; i++) {
-                    double y = (h / 10) * i;
-                    double offset = Math.sin(time + i * 0.5) * 5;
-                    gc.strokeLine(0, y + offset, w, y + offset);
-                }
-
-                gc.setStroke(Color.rgb(102, 51, 255, 0.1));
-                for (int i = 0; i < 15; i++) {
-                    double x = (w / 15) * i;
-                    double offset = Math.cos(time + i * 0.3) * 5;
-                    gc.strokeLine(x + offset, 0, x + offset, h);
-                }
-
-                double pulse = Math.abs(Math.sin(time));
-                gc.setFill(new RadialGradient(0, 0, 0, 0, 100, false,
-                        CycleMethod.NO_CYCLE,
-                        new Stop(0, Color.rgb(255, 51, 102, 0.2 * pulse)),
-                        new Stop(1, Color.TRANSPARENT)));
-                gc.fillOval(-50, -50, 150, 150);
-                gc.fillOval(w - 100, h - 100, 150, 150);
+        // Limit character input to 20 characters
+        confirmTextField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue.length() > 20) {
+                confirmTextField.setText(oldValue);
             }
-        };
-        bgAnim.start();
+        });
 
-        // Content container
-        VBox contentBox = new VBox(20);
-        contentBox.setAlignment(Pos.CENTER);
-        contentBox.setPadding(new Insets(30));
-        contentBox.setMaxWidth(550);
-
-        // Warning icon
-        Label iconLabel = new Label("⚠");
-        iconLabel.setStyle("-fx-font-size: 64; -fx-text-fill: #ff3366;");
-        DropShadow iconGlow = new DropShadow();
-        iconGlow.setColor(Color.rgb(255, 51, 102, 0.8));
-        iconGlow.setRadius(20);
-        iconLabel.setEffect(iconGlow);
-
-        Timeline iconPulse = new Timeline(
-                new KeyFrame(Duration.ZERO, new KeyValue(iconGlow.radiusProperty(), 20)),
-                new KeyFrame(Duration.seconds(1), new KeyValue(iconGlow.radiusProperty(), 30)),
-                new KeyFrame(Duration.seconds(2), new KeyValue(iconGlow.radiusProperty(), 20))
+        Button confirmBtn = new Button("CONFIRM");
+        confirmBtn.setPrefWidth(200);
+        confirmBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #ffaa00, #cc8800);" +
+                        "-fx-text-fill: black;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 170, 0, 0.5), 10, 0.5, 0, 0);"
         );
-        iconPulse.setCycleCount(Timeline.INDEFINITE);
-        iconPulse.play();
+        confirmBtn.setOnMouseEntered(ev -> confirmBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #ffbb22, #ee9900);" +
+                        "-fx-text-fill: black;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 170, 0, 0.7), 12, 0.6, 0, 0);"
+        ));
+        confirmBtn.setOnMouseExited(ev -> confirmBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #ffaa00, #cc8800);" +
+                        "-fx-text-fill: black;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 170, 0, 0.5), 10, 0.5, 0, 0);"
+        ));
+        confirmBtn.setOnAction(ev -> {
+            String inputText = confirmTextField.getText().trim();
+            if (!"RESET EVERYTHING".equalsIgnoreCase(inputText)) {
+                textStage.close();
+                showErrorDialog("Wrong phrase entered.\n\nYou typed: \"" + inputText + "\"\n\nOperation cancelled for safety.");
+            } else {
+                textStage.close();
+                showFinalWarningDialog();
+            }
+        });
 
-        Label headerLabel = new Label(header);
-        headerLabel.setStyle("-fx-font-size: 28; -fx-font-weight: bold; -fx-text-fill: #ff3366; -fx-font-family: 'Arial Black';");
-        headerLabel.setWrapText(true);
-        headerLabel.setMaxWidth(500);
-        headerLabel.setAlignment(Pos.CENTER);
-
-        // Message label with proper wrapping
-        Label messageLabel = new Label(message);
-        messageLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #ffffff; -fx-line-spacing: 4; -fx-font-family: 'Arial';");
-        messageLabel.setWrapText(true);
-        messageLabel.setMaxWidth(520);
-        messageLabel.setAlignment(Pos.CENTER_LEFT);  // Changed to CENTER_LEFT for better readability
-        messageLabel.setPadding(new Insets(0, 10, 0, 10));
-
-        // Wrap message in ScrollPane for long content
-        ScrollPane messageScroll = new ScrollPane(messageLabel);
-        messageScroll.setFitToWidth(true);
-        messageScroll.setPrefHeight(220);  // Allows for scrolling if needed
-        messageScroll.setMaxHeight(220);
-        messageScroll.setStyle(
-                "-fx-background: transparent; " +
-                        "-fx-background-color: transparent; " +
-                        "-fx-border-color: transparent; " +
-                        "-fx-focus-color: transparent; " +
-                        "-fx-faint-focus-color: transparent;"
+        Button cancelBtn = new Button("Cancel");
+        cancelBtn.setPrefWidth(200);
+        cancelBtn.setStyle(
+                "-fx-background-color: rgba(136, 136, 255, 0.2);" +
+                        "-fx-text-fill: #8888ff;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-border-color: #8888ff;" +
+                        "-fx-border-radius: 10;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
         );
-        messageScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        messageScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        cancelBtn.setOnMouseEntered(ev -> cancelBtn.setStyle(
+                "-fx-background-color: rgba(136, 136, 255, 0.3);" +
+                        "-fx-text-fill: #aaaaff;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-border-color: #aaaaff;" +
+                        "-fx-border-radius: 10;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
+        cancelBtn.setOnMouseExited(ev -> cancelBtn.setStyle(
+                "-fx-background-color: rgba(136, 136, 255, 0.2);" +
+                        "-fx-text-fill: #8888ff;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-border-color: #8888ff;" +
+                        "-fx-border-radius: 10;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
+        cancelBtn.setOnAction(ev -> textStage.close());
 
-        Separator separator = new Separator(Orientation.HORIZONTAL);
-        separator.setMaxWidth(500);
-        separator.setStyle("-fx-background-color: #ff3366; -fx-border-color: #ff3366;");
-
-        HBox buttonBox = new HBox(15);
+        HBox buttonBox = new HBox(20, confirmBtn, cancelBtn);
         buttonBox.setAlignment(Pos.CENTER);
 
-        Button cancelBtn = new Button(cancelText);
-        cancelBtn.setPrefWidth(180);
-        cancelBtn.setPrefHeight(45);
-        cancelBtn.setStyle(
-                "-fx-background-color: linear-gradient(to bottom, #666666, #444444); " +
-                        "-fx-text-fill: #ffffff; -fx-font-family: 'Arial Black'; " +
-                        "-fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 12; " +
-                        "-fx-cursor: hand;"
-        );
+        dialog.getChildren().addAll(titleLabel, instructionLabel, confirmTextField, buttonBox);
+        overlay.getChildren().add(dialog);
+        StackPane.setAlignment(dialog, Pos.CENTER);
 
-        cancelBtn.setOnAction(ev -> {
-            bgAnim.stop();
-            iconPulse.stop();
-            callback.onResult(false, dialogStage);
-            dialogStage.close();
-        });
-
-        Button confirmBtn = new Button(confirmText);
-        confirmBtn.setPrefWidth(180);
-        confirmBtn.setPrefHeight(45);
-        confirmBtn.setStyle(
-                "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
-                        "-fx-text-fill: #ffffff; -fx-font-family: 'Arial Black'; " +
-                        "-fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 12; " +
-                        "-fx-cursor: hand;"
-        );
-
-        confirmBtn.setOnAction(ev -> {
-            bgAnim.stop();
-            iconPulse.stop();
-            callback.onResult(true, dialogStage);
-        });
-
-        buttonBox.getChildren().addAll(cancelBtn, confirmBtn);
-
-        // Changed messageLabel to messageScroll in children list
-        contentBox.getChildren().addAll(iconLabel, headerLabel, messageScroll, separator, buttonBox);
-
-        // INCREASED background rectangle height
-        Rectangle bgRect = new Rectangle(600, 580);  // Changed from 480 to 580
-        bgRect.setFill(Color.rgb(0, 0, 0, 0.85));
-        bgRect.setArcWidth(0);
-        bgRect.setArcHeight(0);
-
-        DropShadow panelGlow = new DropShadow();
-        panelGlow.setColor(Color.rgb(255, 51, 102, 0.5));
-        panelGlow.setRadius(20);
-        bgRect.setEffect(panelGlow);
-
-        StackPane contentStack = new StackPane();
-        contentStack.getChildren().addAll(bgRect, contentBox);
-
-        StackPane root = new StackPane();
-        root.getChildren().addAll(bgCanvas, contentStack);
-
-        // Entrance animation
-        contentStack.setOpacity(0);
-        contentStack.setScaleX(0.8);
-        contentStack.setScaleY(0.8);
-
-        Timeline entrance = new Timeline(
-                new KeyFrame(Duration.ZERO,
-                        new KeyValue(contentStack.opacityProperty(), 0),
-                        new KeyValue(contentStack.scaleXProperty(), 0.8),
-                        new KeyValue(contentStack.scaleYProperty(), 0.8)),
-                new KeyFrame(Duration.millis(300),
-                        new KeyValue(contentStack.opacityProperty(), 1, Interpolator.EASE_OUT),
-                        new KeyValue(contentStack.scaleXProperty(), 1.0, Interpolator.EASE_OUT),
-                        new KeyValue(contentStack.scaleYProperty(), 1.0, Interpolator.EASE_OUT))
-        );
-        entrance.play();
-
-        // INCREASED scene height
-        Scene scene = new Scene(root, 600, 580);  // Changed from 480 to 580
+        Scene scene = new Scene(overlay, 750, 580);
         scene.setFill(Color.TRANSPARENT);
-        dialogStage.initStyle(StageStyle.TRANSPARENT);
-        dialogStage.setScene(scene);
-        dialogStage.show();
+        textStage.setScene(scene);
+
+        textStage.setOnShown(ev -> {
+            double x = primaryStage.getX() + (primaryStage.getWidth() - textStage.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - textStage.getHeight()) / 2;
+            textStage.setX(x);
+            textStage.setY(y);
+            Platform.runLater(() -> confirmTextField.requestFocus());
+        });
+
+        textStage.show();
+    }
+
+    private void showFinalWarningDialog() {
+        Stage finalStage = new Stage();
+        finalStage.initOwner(primaryStage);
+        finalStage.initModality(Modality.WINDOW_MODAL);
+        finalStage.initStyle(StageStyle.TRANSPARENT);
+        finalStage.setTitle("FINAL WARNING");
+        finalStage.setResizable(false);
+
+        StackPane overlay = new StackPane();
+        overlay.setStyle("-fx-background-color: transparent;");
+        overlay.setPadding(new Insets(40));
+
+        VBox dialog = new VBox(25);
+        dialog.setAlignment(Pos.CENTER);
+        dialog.setPadding(new Insets(40));
+        dialog.setMaxWidth(700);
+        dialog.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #2e1a1a, #3e1616, #460f0f);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 0, 0, 0.8), 40, 0.7, 0, 0);"
+        );
+
+        // Close button
+        Button closeButton = new Button("✕");
+        closeButton.setStyle(
+                "-fx-background-color: rgba(255, 68, 68, 0.2);" +
+                        "-fx-text-fill: #FF4444;" +
+                        "-fx-font-family: 'Arial';" +
+                        "-fx-font-size: 18;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 8 12;" +
+                        "-fx-border-color: #FF4444;" +
+                        "-fx-border-radius: 20;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        );
+        closeButton.setOnMouseEntered(ev -> closeButton.setStyle(
+                "-fx-background-color: #FF4444;" +
+                        "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-family: 'Arial';" +
+                        "-fx-font-size: 18;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 8 12;" +
+                        "-fx-border-color: #FF4444;" +
+                        "-fx-border-radius: 20;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
+        closeButton.setOnMouseExited(ev -> closeButton.setStyle(
+                "-fx-background-color: rgba(255, 68, 68, 0.2);" +
+                        "-fx-text-fill: #FF4444;" +
+                        "-fx-font-family: 'Arial';" +
+                        "-fx-font-size: 18;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 8 12;" +
+                        "-fx-border-color: #FF4444;" +
+                        "-fx-border-radius: 20;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
+        closeButton.setOnAction(ev -> finalStage.close());
+
+        HBox topBar = new HBox(closeButton);
+        topBar.setAlignment(Pos.TOP_RIGHT);
+
+        Label skullIcon = new Label("💀");
+        skullIcon.setStyle(
+                "-fx-font-size: 60;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 0, 0, 0.8), 20, 0.8, 0, 0);"
+        );
+
+        Label titleLabel = new Label("FINAL WARNING");
+        titleLabel.setStyle(
+                "-fx-text-fill: #FF0000;" +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-font-size: 32;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 0, 0, 0.8), 12, 0.8, 0, 0);"
+        );
+
+        Label subtitleLabel = new Label("LAST CHANCE TO CANCEL");
+        subtitleLabel.setStyle(
+                "-fx-text-fill: #FFAA00;" +
+                        "-fx-font-family: 'Arial';" +
+                        "-fx-font-size: 16;" +
+                        "-fx-font-weight: bold;"
+        );
+
+        VBox titleBox = new VBox(10, skullIcon, titleLabel, subtitleLabel);
+        titleBox.setAlignment(Pos.CENTER);
+
+        Label messageLabel = new Label(
+                "This is your FINAL WARNING.\n\n" +
+                        "Clicking YES will:\n" +
+                        "• Delete ALL leaderboard data\n" +
+                        "• Reset ALL players to Level 1\n" +
+                        "• Clear the entire game history\n\n" +
+                        "⚠ NO RECOVERY POSSIBLE ⚠\n\n" +
+                        "Are you 100% absolutely certain?"
+        );
+        messageLabel.setStyle(
+                "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-family: 'Arial';" +
+                        "-fx-font-size: 15;" +
+                        "-fx-text-alignment: center;" +
+                        "-fx-line-spacing: 5px;"
+        );
+        messageLabel.setWrapText(true);
+        messageLabel.setMaxWidth(600);
+        messageLabel.setAlignment(Pos.CENTER);
+
+        Button yesBtn = new Button("YES, DELETE");
+        yesBtn.setPrefWidth(220);
+        yesBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #cc0000, #990000);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 15;" +
+                        "-fx-padding: 14 28;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 0, 0, 0.6), 12, 0.6, 0, 0);"
+        );
+        yesBtn.setOnMouseEntered(ev -> yesBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #ff0000, #cc0000);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 15;" +
+                        "-fx-padding: 14 28;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 0, 0, 0.8), 15, 0.7, 0, 0);"
+        ));
+        yesBtn.setOnMouseExited(ev -> yesBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #cc0000, #990000);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 15;" +
+                        "-fx-padding: 14 28;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 0, 0, 0.6), 12, 0.6, 0, 0);"
+        ));
+        yesBtn.setOnAction(ev -> {
+            finalStage.close();
+            executeReset();
+        });
+
+        Button noBtn = new Button("NO, CANCEL");
+        noBtn.setPrefWidth(220);
+        noBtn.setStyle(
+                "-fx-background-color: rgba(68, 255, 68, 0.2);" +
+                        "-fx-text-fill: #44ff44;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 15;" +
+                        "-fx-padding: 14 28;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-border-color: #44ff44;" +
+                        "-fx-border-radius: 10;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        );
+        noBtn.setOnMouseEntered(ev -> noBtn.setStyle(
+                "-fx-background-color: rgba(68, 255, 68, 0.3);" +
+                        "-fx-text-fill: #66ff66;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 15;" +
+                        "-fx-padding: 14 28;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-border-color: #66ff66;" +
+                        "-fx-border-radius: 10;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
+        noBtn.setOnMouseExited(ev -> noBtn.setStyle(
+                "-fx-background-color: rgba(68, 255, 68, 0.2);" +
+                        "-fx-text-fill: #44ff44;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 15;" +
+                        "-fx-padding: 14 28;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-border-color: #44ff44;" +
+                        "-fx-border-radius: 10;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
+        noBtn.setOnAction(ev -> finalStage.close());
+
+        HBox buttonBox = new HBox(20, yesBtn, noBtn);
+        buttonBox.setAlignment(Pos.CENTER);
+
+        dialog.getChildren().addAll(topBar, titleBox, messageLabel, buttonBox);
+        overlay.getChildren().add(dialog);
+        StackPane.setAlignment(dialog, Pos.CENTER);
+
+        Scene scene = new Scene(overlay, 800, 750);
+        scene.setFill(Color.TRANSPARENT);
+        finalStage.setScene(scene);
+
+        finalStage.setOnShown(ev -> {
+            double x = primaryStage.getX() + (primaryStage.getWidth() - finalStage.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - finalStage.getHeight()) / 2;
+            finalStage.setX(x);
+            finalStage.setY(y);
+        });
+
+        finalStage.show();
+    }
+
+    private void showErrorDialog(String message) {
+        Stage errorStage = new Stage();
+        errorStage.initOwner(primaryStage);
+        errorStage.initModality(Modality.WINDOW_MODAL);
+        errorStage.initStyle(StageStyle.TRANSPARENT);
+        errorStage.setTitle("Confirmation Failed");
+        errorStage.setResizable(false);
+
+        StackPane overlay = new StackPane();
+        overlay.setStyle("-fx-background-color: transparent;");
+        overlay.setPadding(new Insets(40));
+
+        VBox dialog = new VBox(20);
+        dialog.setAlignment(Pos.CENTER);
+        dialog.setPadding(new Insets(35));
+        dialog.setMaxWidth(550);
+        dialog.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e, #0f3460);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.5), 25, 0.5, 0, 0);"
+        );
+
+        Label iconLabel = new Label("✗");
+        iconLabel.setStyle(
+                "-fx-text-fill: #FF4444;" +
+                        "-fx-font-size: 50;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.7), 12, 0.7, 0, 0);"
+        );
+
+        Label titleLabel = new Label("Confirmation Failed");
+        titleLabel.setStyle(
+                "-fx-text-fill: #FF4444;" +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-font-size: 24;" +
+                        "-fx-font-weight: bold;"
+        );
+
+        Label messageLabel = new Label(message);
+        messageLabel.setStyle(
+                "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-family: 'Arial';" +
+                        "-fx-font-size: 14;" +
+                        "-fx-text-alignment: center;" +
+                        "-fx-line-spacing: 4px;"
+        );
+        messageLabel.setWrapText(true);
+        messageLabel.setMaxWidth(480);
+        messageLabel.setAlignment(Pos.CENTER);
+
+        Button okBtn = new Button("OK");
+        okBtn.setPrefWidth(180);
+        okBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #8888ff, #6666cc);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;"
+        );
+        okBtn.setOnMouseEntered(ev -> okBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #aaaaff, #8888ee);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;"
+        ));
+        okBtn.setOnMouseExited(ev -> okBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #8888ff, #6666cc);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-padding: 12 24;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;"
+        ));
+        okBtn.setOnAction(ev -> errorStage.close());
+
+        dialog.getChildren().addAll(iconLabel, titleLabel, messageLabel, okBtn);
+        overlay.getChildren().add(dialog);
+        StackPane.setAlignment(dialog, Pos.CENTER);
+
+        Scene scene = new Scene(overlay, 650, 500);
+        scene.setFill(Color.TRANSPARENT);
+        errorStage.setScene(scene);
+
+        errorStage.setOnShown(ev -> {
+            double x = primaryStage.getX() + (primaryStage.getWidth() - errorStage.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - errorStage.getHeight()) / 2;
+            errorStage.setX(x);
+            errorStage.setY(y);
+        });
+
+        errorStage.show();
     }
 
     private void showBannedDialog(String username, String banReason, boolean hasAppeal, String appealStatus) {
