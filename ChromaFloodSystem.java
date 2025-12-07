@@ -118,7 +118,6 @@ import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 import java.util.function.Consumer;
 import java.util.Base64;
-import java.util.concurrent.CompletableFuture;
 import java.awt.BasicStroke;
 import java.awt.RenderingHints;
 import javax.imageio.ImageIO;
@@ -239,6 +238,7 @@ public class ChromaFloodSystem extends Application {
     private String authToken;
     private StackPane leaderboardOverlay;
     private VBox leaderboardDialog;
+    private volatile boolean isNavigating = false;
     private Timeline maintenanceCheckTimer = null;
     private static final int MAINTENANCE_CHECK_INTERVAL_SECONDS = 15; // Check every 60 seconds (less frequent)
     private AtomicBoolean isCheckingMaintenance = new AtomicBoolean(false);
@@ -993,6 +993,48 @@ public class ChromaFloodSystem extends Application {
         }, executor);
     }
 
+    private void checkMaintenanceBeforeLogin(Runnable onSuccess) {
+        executor.submit(() -> {
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(MAINTENANCE_CHECK_URL))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .timeout(java.time.Duration.ofSeconds(5))
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request,
+                        HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() == 200) {
+                    JsonArray array = gson.fromJson(response.body(), JsonArray.class);
+                    if (array.size() > 0) {
+                        JsonObject config = array.get(0).getAsJsonObject();
+                        boolean isMaintenanceMode = config.get("value").getAsString().equalsIgnoreCase("true");
+
+                        if (isMaintenanceMode) {
+                            String message = getMaintenanceMessage();
+                            Platform.runLater(() -> {
+                                hideLoadingScreen();
+                                showMaintenanceDialog(message);
+                            });
+                            return;
+                        }
+                    }
+                }
+
+                // No maintenance, proceed
+                Platform.runLater(onSuccess);
+
+            } catch (Exception e) {
+                System.err.println("Maintenance check failed: " + e.getMessage());
+                // Fail-open: allow login attempt
+                Platform.runLater(onSuccess);
+            }
+        });
+    }
+
     private void stopMaintenanceMonitoring() {
         if (maintenanceCheckTimer != null) {
             maintenanceCheckTimer.stop();
@@ -1340,7 +1382,7 @@ public class ChromaFloodSystem extends Application {
             try {
                 // Open download page in browser
                 java.awt.Desktop.getDesktop().browse(
-                        new URI("https://yourwebsite.com/download") // Download link for new version
+                        new URI("https://drive.google.com/file/d/1lROOrJCND-o8UN8ChUhqKmziVb0WazeC/view") // Download link for new version
                 );
             } catch (Exception ex) {
                 ex.printStackTrace();
@@ -2337,6 +2379,8 @@ public class ChromaFloodSystem extends Application {
         });
 
         loginButton.setOnAction(event -> {
+            if (isNavigating) return; // Prevent spam clicking
+
             String user = usernameField.getText().trim();
             String pass = passwordField.getText().trim();
 
@@ -2346,10 +2390,18 @@ public class ChromaFloodSystem extends Application {
                 return;
             }
 
+            if (loginButton.isDisabled()) return; // Extra safety check
+
+            isNavigating = true;
             loginButton.setDisable(true);
+            // Removed goToRegisterButton.setDisable(true) - isNavigating flag handles spam prevention
             backgroundAnimation.stop();
             showLoadingScreen();
-            loginWithSupabase(user, pass, loginButton, keepLoggedInCheckBox.isSelected());
+
+            // Check maintenance first
+            checkMaintenanceBeforeLogin(() -> {
+                loginWithSupabase(user, pass, loginButton, keepLoggedInCheckBox.isSelected());
+            });
         });
 
         Button goToRegisterButton = new Button("Go to Register");
@@ -2430,8 +2482,17 @@ public class ChromaFloodSystem extends Application {
         });
 
         goToRegisterButton.setOnAction(event -> {
+            if (isNavigating) return; // Prevent spam clicking
+            isNavigating = true;
+
+            loginButton.setDisable(true);
+            goToRegisterButton.setDisable(true);
+
             animateOutroAndTransition(container, loginBox, loginButton, goToRegisterButton,
-                    backgroundAnimation, () -> showRegisterScreen());
+                    backgroundAnimation, () -> {
+                        showRegisterScreen();
+                        isNavigating = false; // Reset after navigation completes
+                    });
         });
 
         loginBox.getChildren().addAll(
@@ -3048,6 +3109,8 @@ public class ChromaFloodSystem extends Application {
         });
 
         registerButton.setOnAction(event -> {
+            if (isNavigating) return; // Prevent spam clicking
+
             String user = usernameField.getText().trim();
             String pass = passwordField.getText().trim();
             String confirmPass = confirmPasswordField.getText().trim();
@@ -3069,7 +3132,10 @@ public class ChromaFloodSystem extends Application {
             }
 
             if (registerButton.isDisabled()) return;
+
+            isNavigating = true;
             registerButton.setDisable(true);
+            // Don't worry about disabling goToLoginButton - the navigation flag prevents spam
 
             byte[] profilePicBytes;
             try {
@@ -3084,10 +3150,20 @@ public class ChromaFloodSystem extends Application {
             } catch (IOException e) {
                 new Alert(AlertType.ERROR, "Failed to read image.").showAndWait();
                 registerButton.setDisable(false);
+                isNavigating = false;
                 return;
             }
 
-            signupWithSupabase(user, pass, profilePicBytes, registerButton);
+            // Store profilePicBytes in a final variable for lambda
+            byte[] finalProfilePicBytes = profilePicBytes;
+
+            // CHECK MAINTENANCE BEFORE REGISTRATION
+            backgroundAnimation.stop();
+            showLoadingScreen();
+            checkMaintenanceBeforeLogin(() -> {
+                // If maintenance is off, proceed with registration
+                signupWithSupabase(user, pass, finalProfilePicBytes, registerButton);
+            });
         });
 
         Button goToLoginButton = new Button("Go to Login");
@@ -3168,8 +3244,17 @@ public class ChromaFloodSystem extends Application {
         });
 
         goToLoginButton.setOnAction(event -> {
+            if (isNavigating) return; // Prevent spam clicking
+            isNavigating = true;
+
+            registerButton.setDisable(true);
+            goToLoginButton.setDisable(true);
+
             animateOutroAndTransition(container, rightSection, registerButton, goToLoginButton,
-                    backgroundAnimation, () -> showLoginScreen());
+                    backgroundAnimation, () -> {
+                        showLoginScreen();
+                        isNavigating = false; // Reset after navigation completes
+                    });
         });
 
         rightSection.getChildren().addAll(usernameField, passwordContainer, confirmPasswordField, spacer, registerButton, goToLoginButton);
@@ -5560,9 +5645,11 @@ public class ChromaFloodSystem extends Application {
 
                 HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
+                // FIRST Platform.runLater - Main success/error handler
                 Platform.runLater(() -> {
                     loginButton.setDisable(false);
                     hideLoadingScreen();
+                    isNavigating = false; // ADD THIS LINE
 
                     if (response.statusCode() == 200) {
                         String body = response.body();
@@ -5591,7 +5678,6 @@ public class ChromaFloodSystem extends Application {
                         }
 
                         // VERIFY PASSWORD
-                        // Find this section (around line 2715):
                         String storedHash = userData.get("password").getAsString();
                         if (!BCrypt.checkpw(password, storedHash)) {
                             new Alert(AlertType.ERROR, "Incorrect username or password.").showAndWait();
@@ -5642,17 +5728,20 @@ public class ChromaFloodSystem extends Application {
                 });
 
             } catch (java.net.ConnectException | java.nio.channels.UnresolvedAddressException e) {
-                // Internet connection issue - let connection monitor handle it
+                // SECOND Platform.runLater - Connection error handler
                 System.out.println("[LOGIN] Connection error detected: " + e.getMessage());
                 Platform.runLater(() -> {
                     loginButton.setDisable(false);
                     hideLoadingScreen();
+                    isNavigating = false; // ADD THIS LINE
                     // Don't show error - connection monitor will show dialog
                 });
             } catch (Exception e) {
+                // THIRD Platform.runLater - General exception handler
                 Platform.runLater(() -> {
                     loginButton.setDisable(false);
                     hideLoadingScreen();
+                    isNavigating = false; // ADD THIS LINE
                     new Alert(AlertType.ERROR, "Connection failed: " + e.getMessage()).showAndWait();
                     e.printStackTrace();
                 });
