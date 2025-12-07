@@ -8,8 +8,12 @@ import javafx.collections.FXCollections;
 import javafx.scene.shape.StrokeLineCap;
 import javafx.animation.*;
 import java.net.InetAddress;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.net.NetworkInterface;
 import java.security.MessageDigest;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import java.util.Arrays;
 import javafx.util.Duration;
 import javafx.scene.effect.*;
@@ -71,9 +75,7 @@ import javafx.animation.KeyFrame;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 import java.io.InputStream;
 import java.nio.file.Paths;
 import javafx.scene.media.AudioClip;
@@ -237,6 +239,21 @@ public class ChromaFloodSystem extends Application {
     private String authToken;
     private StackPane leaderboardOverlay;
     private VBox leaderboardDialog;
+    private Timeline maintenanceCheckTimer = null;
+    private static final int MAINTENANCE_CHECK_INTERVAL_SECONDS = 15; // Check every 60 seconds (less frequent)
+    private AtomicBoolean isCheckingMaintenance = new AtomicBoolean(false);
+    private volatile boolean maintenanceDialogShown = false;
+    private Stage bannedDialogStage = null;
+    private int currentAppealPage = 0;
+    private final int APPEALS_PER_PAGE = 15;
+    private int totalAppealsCount = 0;
+    private Button prevPageBtn;
+    private Button nextPageBtn;
+    private Label pageInfoLabel;
+    private ComboBox<String> statusFilterCombo;
+    private String currentStatusFilter = "All"; // Track current filter
+    private TextField searchField;
+    private String currentSearchQuery = "";
     private Stage resetProgressStage = null;
     private VBox resetProgressDialog = null;
     private boolean isLevelEntranceAnimating = false;
@@ -272,10 +289,15 @@ public class ChromaFloodSystem extends Application {
     private static final String LEADERBOARD_API = "https://your-springboot.up.railway.app/api/leaderboard";
     private static final String SUPABASE_URL = "https://pnyzbscskolmgdiuqmwh.supabase.co";
     private static final String SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBueXpic2Nza29sbWdkaXVxbXdoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM3MDA0NjksImV4cCI6MjA3OTI3NjQ2OX0.p9Z808Xs4IFgg5vUyv0WEzK22fVSQ6fWd3kNU23bsf0";
+    private static final String USERS_TABLE = SUPABASE_URL + "/rest/v1/profiles";
+    private static final String APP_VERSION = "1.0.0"; // Semantic versioning
+    private static final String VERSION_CHECK_URL = SUPABASE_URL + "/rest/v1/app_config?key=eq.min_required_version";
     private static final String ONLINE_GET = SUPABASE_URL + "/rest/v1/leaderboard?select=*&order=level.desc,completion_time.asc&limit=200";
     private static final String ONLINE_POST = SUPABASE_URL + "/rest/v1/leaderboard?on_conflict=username,level";
     private static final String LEADERBOARD_API_GET = SUPABASE_URL + "/rest/v1/leaderboard?select=*&order=level.desc,completion_time.asc&limit=500";
     private static final String LEADERBOARD_API_POST = SUPABASE_URL + "/rest/v1/leaderboard?on_conflict=username,level";
+    private static final String MAINTENANCE_CHECK_URL = SUPABASE_URL + "/rest/v1/app_config?key=eq.maintenance_mode";
+    private static final String MAINTENANCE_MESSAGE_URL = SUPABASE_URL + "/rest/v1/app_config?key=eq.maintenance_message";
     private final BooleanProperty profileLoaded = new SimpleBooleanProperty(false);
     private ImageView levelSelectProfileView;
     private ImageView settingsProfileView;
@@ -891,6 +913,470 @@ public class ChromaFloodSystem extends Application {
         updateProfileDisplayInLevelSelect();
     }
 
+    private void startMaintenanceMonitoring() {
+        if (maintenanceCheckTimer != null) {
+            maintenanceCheckTimer.stop();
+        }
+
+        // Do first check immediately
+        if (!isCheckingMaintenance.get() && !maintenanceDialogShown) {
+            checkMaintenanceStatus();
+        }
+
+        // Then schedule periodic checks every 60 seconds
+        maintenanceCheckTimer = new Timeline(new KeyFrame(
+                Duration.seconds(MAINTENANCE_CHECK_INTERVAL_SECONDS),
+                event -> {
+                    if (!isCheckingMaintenance.get() && !maintenanceDialogShown) {
+                        checkMaintenanceStatus();
+                    }
+                }
+        ));
+        maintenanceCheckTimer.setCycleCount(Timeline.INDEFINITE);
+        maintenanceCheckTimer.play();
+    }
+
+    private void checkMaintenanceStatus() {
+        // Prevent concurrent checks
+        if (!isCheckingMaintenance.compareAndSet(false, true)) {
+            return;
+        }
+
+        // Use cached thread pool executor (non-blocking)
+        CompletableFuture.runAsync(() -> {
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(MAINTENANCE_CHECK_URL))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .timeout(java.time.Duration.ofSeconds(5)) // Shorter timeout
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request,
+                        HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() == 200) {
+                    JsonArray array = gson.fromJson(response.body(), JsonArray.class);
+                    if (array.size() > 0) {
+                        JsonObject config = array.get(0).getAsJsonObject();
+                        boolean isMaintenanceMode = config.get("value").getAsString().equalsIgnoreCase("true");
+
+                        if (isMaintenanceMode && !maintenanceDialogShown) {
+                            // Check if current user is admin
+                            boolean isAdmin = currentUser != null && currentUser.equalsIgnoreCase(ADMIN_USERNAME);
+
+                            if (!isAdmin) {
+                                // Kick out non-admin users
+                                String message = getMaintenanceMessage();
+                                Platform.runLater(() -> {
+                                    maintenanceDialogShown = true;
+                                    // Stop the maintenance checker
+                                    if (maintenanceCheckTimer != null) {
+                                        maintenanceCheckTimer.stop();
+                                    }
+                                    // Show maintenance dialog
+                                    showMaintenanceDialog(message);
+                                });
+                            } else {
+                                System.out.println("Maintenance mode active but admin access granted");
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                // Silent fail - don't interrupt gameplay
+                System.err.println("Maintenance check failed (non-critical): " + e.getMessage());
+            } finally {
+                isCheckingMaintenance.set(false);
+            }
+        }, executor);
+    }
+
+    private void stopMaintenanceMonitoring() {
+        if (maintenanceCheckTimer != null) {
+            maintenanceCheckTimer.stop();
+            maintenanceCheckTimer = null;
+        }
+    }
+
+    private void checkAppVersion(Runnable onSuccess) {
+        executor.submit(() -> {
+            try {
+                // First check maintenance mode
+                HttpRequest maintenanceRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(MAINTENANCE_CHECK_URL))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .timeout(java.time.Duration.ofSeconds(10))
+                        .GET()
+                        .build();
+
+                HttpResponse<String> maintenanceResponse = httpClient.send(maintenanceRequest,
+                        HttpResponse.BodyHandlers.ofString());
+
+                if (maintenanceResponse.statusCode() == 200) {
+                    JsonArray maintenanceArray = gson.fromJson(maintenanceResponse.body(), JsonArray.class);
+                    if (maintenanceArray.size() > 0) {
+                        JsonObject config = maintenanceArray.get(0).getAsJsonObject();
+                        boolean isMaintenanceMode = config.get("value").getAsString().equalsIgnoreCase("true");
+
+                        if (isMaintenanceMode) {
+                            // Check if current user is admin
+                            String savedUser = loadLoginToken();
+                            boolean isAdmin = savedUser != null && savedUser.equalsIgnoreCase(ADMIN_USERNAME);
+
+                            if (!isAdmin) {
+                                // Get maintenance message
+                                String message = getMaintenanceMessage();
+                                Platform.runLater(() -> showMaintenanceDialog(message));
+                                return;
+                            } else {
+                                System.out.println("Admin access granted during maintenance mode");
+                            }
+                        }
+                    }
+                }
+
+                // Then check version
+                HttpRequest versionRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(VERSION_CHECK_URL))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .timeout(java.time.Duration.ofSeconds(10))
+                        .GET()
+                        .build();
+
+                HttpResponse<String> versionResponse = httpClient.send(versionRequest,
+                        HttpResponse.BodyHandlers.ofString());
+
+                if (versionResponse.statusCode() == 200) {
+                    JsonArray array = gson.fromJson(versionResponse.body(), JsonArray.class);
+                    if (array.size() > 0) {
+                        JsonObject config = array.get(0).getAsJsonObject();
+                        String minVersion = config.get("value").getAsString();
+
+                        if (isVersionOutdated(APP_VERSION, minVersion)) {
+                            Platform.runLater(() -> showUpdateRequiredDialog());
+                            return;
+                        }
+                    }
+                }
+
+                // Everything OK, continue
+                Platform.runLater(onSuccess);
+
+            } catch (Exception e) {
+                System.err.println("Version/Maintenance check failed: " + e.getMessage());
+                // Fail-open approach - allow play if checks fail
+                Platform.runLater(onSuccess);
+            }
+        });
+    }
+
+    private String getMaintenanceMessage() {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(MAINTENANCE_MESSAGE_URL))
+                    .header("apikey", SUPABASE_ANON_KEY)
+                    .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                    .timeout(java.time.Duration.ofSeconds(10))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request,
+                    HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                JsonArray array = gson.fromJson(response.body(), JsonArray.class);
+                if (array.size() > 0) {
+                    JsonObject config = array.get(0).getAsJsonObject();
+                    return config.get("value").getAsString();
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Failed to fetch maintenance message: " + e.getMessage());
+        }
+
+        return "Chroma Flood is currently under maintenance.\n\nWe're updating the game to bring you new features and improvements.\n\nPlease check back in a few minutes!";
+    }
+
+    private void showMaintenanceDialog(String message) {
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.initStyle(StageStyle.UNDECORATED);
+        dialog.setTitle("Maintenance Mode");
+
+        VBox content = new VBox(20);
+        content.setAlignment(Pos.CENTER);
+        content.setPadding(new Insets(40));
+        content.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #0f0f1e);" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 165, 0, 0.6), 30, 0.6, 0, 0);"
+        );
+
+        // Animated wrench icon
+        Label icon = new Label("🔧");
+        icon.setStyle("-fx-font-size: 64;");
+
+        // Add rotation animation to the wrench
+        RotateTransition rotate = new RotateTransition(Duration.seconds(2), icon);
+        rotate.setByAngle(360);
+        rotate.setCycleCount(Animation.INDEFINITE);
+        rotate.play();
+
+        Label title = new Label("UNDER MAINTENANCE");
+        title.setStyle(
+                "-fx-font-size: 28; -fx-font-weight: bold; " +
+                        "-fx-text-fill: #ffa500; -fx-font-family: 'Arial Black';"
+        );
+
+        // Scrollable message container
+        VBox messageContainer = new VBox(10);
+        messageContainer.setAlignment(Pos.CENTER);
+        messageContainer.setMaxWidth(550);
+        messageContainer.setPrefHeight(Region.USE_COMPUTED_SIZE);
+
+        Label messageLabel = new Label(message);
+        messageLabel.setStyle(
+                "-fx-font-size: 16; -fx-text-fill: #ffffff; " +
+                        "-fx-text-alignment: center; -fx-line-spacing: 5px;"
+        );
+        messageLabel.setWrapText(true);
+        messageLabel.setMaxWidth(550);
+        messageLabel.setAlignment(Pos.CENTER);
+
+        // Add some padding around the message
+        VBox messagePadding = new VBox(messageLabel);
+        messagePadding.setPadding(new Insets(10, 20, 10, 20));
+        messagePadding.setAlignment(Pos.CENTER);
+
+        ScrollPane messageScroll = new ScrollPane(messagePadding);
+        messageScroll.setFitToWidth(true);
+        messageScroll.setMaxHeight(200);
+        messageScroll.setPrefViewportHeight(Region.USE_COMPUTED_SIZE);
+        messageScroll.setStyle(
+                "-fx-background: transparent; " +
+                        "-fx-background-color: transparent; " +
+                        "-fx-border-color: transparent;"
+        );
+        messageScroll.setPannable(true);
+        messageScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        messageScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+
+        messageContainer.getChildren().add(messageScroll);
+
+        // Progress indicator
+        ProgressIndicator progress = new ProgressIndicator();
+        progress.setStyle("-fx-progress-color: #ffa500;");
+        progress.setPrefSize(40, 40);
+
+        Label statusLabel = new Label("We'll be back soon!");
+        statusLabel.setStyle(
+                "-fx-font-size: 14; -fx-text-fill: #aaaaaa; " +
+                        "-fx-font-style: italic;"
+        );
+
+        Button retryBtn = new Button("Retry Connection");
+        String retryBtnBaseStyle = "-fx-background-color: linear-gradient(to bottom, #ffa500, #ff8c00); " +
+                "-fx-text-fill: white; -fx-font-weight: bold; " +
+                "-fx-font-size: 15; -fx-padding: 12 35; " +
+                "-fx-background-radius: 10; -fx-cursor: hand;";
+
+        String retryBtnHoverStyle = "-fx-background-color: linear-gradient(to bottom, #ffb732, #ffa500); " +
+                "-fx-text-fill: white; -fx-font-weight: bold; " +
+                "-fx-font-size: 15; -fx-padding: 12 35; " +
+                "-fx-background-radius: 10; -fx-cursor: hand; " +
+                "-fx-effect: dropshadow(gaussian, rgba(255, 165, 0, 0.8), 15, 0.5, 0, 0);";
+
+        retryBtn.setStyle(retryBtnBaseStyle);
+        retryBtn.setOnMouseEntered(e -> retryBtn.setStyle(retryBtnHoverStyle));
+        retryBtn.setOnMouseExited(e -> retryBtn.setStyle(retryBtnBaseStyle));
+        retryBtn.setOnAction(e -> {
+            dialog.close();
+
+            // Reset the maintenance dialog flag
+            maintenanceDialogShown = false;
+
+            // Re-check maintenance status
+            showLoadingScreen();
+            checkAppVersion(() -> {
+                cacheDefaultProfilePic();
+                updateImageResources();
+                downloadAudioResources();
+                downloadImageResources();
+
+                level1Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[0]).toURI().toString());
+                level2Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[1]).toURI().toString());
+                level3Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[2]).toURI().toString());
+                level4Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[3]).toURI().toString());
+                level5Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[4]).toURI().toString());
+                level6Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[5]).toURI().toString());
+
+                checkSessionAndStart(); // This will restart maintenance monitoring
+            });
+        });
+
+        Button exitBtn = new Button("Exit");
+        String exitBtnBaseStyle = "-fx-background-color: #666666; -fx-text-fill: white; " +
+                "-fx-font-weight: bold; -fx-font-size: 14; " +
+                "-fx-padding: 10 28; -fx-background-radius: 10; -fx-cursor: hand;";
+
+        String exitBtnHoverStyle = "-fx-background-color: #777777; -fx-text-fill: white; " +
+                "-fx-font-weight: bold; -fx-font-size: 14; " +
+                "-fx-padding: 10 28; -fx-background-radius: 10; -fx-cursor: hand;";
+
+        exitBtn.setStyle(exitBtnBaseStyle);
+        exitBtn.setOnMouseEntered(e -> exitBtn.setStyle(exitBtnHoverStyle));
+        exitBtn.setOnMouseExited(e -> exitBtn.setStyle(exitBtnBaseStyle));
+        exitBtn.setOnAction(e -> Platform.exit());
+
+        HBox buttons = new HBox(15, retryBtn, exitBtn);
+        buttons.setAlignment(Pos.CENTER);
+
+        content.getChildren().addAll(icon, title, messageContainer, progress, statusLabel, buttons);
+
+        Scene scene = new Scene(content, 650, 550);
+        scene.setFill(Color.TRANSPARENT);
+        dialog.setScene(scene);
+
+        // Prevent closing
+        dialog.setOnCloseRequest(event -> event.consume());
+
+        dialog.show();
+    }
+
+    private boolean isVersionOutdated(String current, String minimum) {
+        String[] currentParts = current.split("\\.");
+        String[] minParts = minimum.split("\\.");
+
+        for (int i = 0; i < Math.min(currentParts.length, minParts.length); i++) {
+            int c = Integer.parseInt(currentParts[i]);
+            int m = Integer.parseInt(minParts[i]);
+            if (c < m) return true;
+            if (c > m) return false;
+        }
+        return false;
+    }
+
+    private void showUpdateRequiredDialog() {
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.initStyle(StageStyle.UNDECORATED);
+        dialog.setTitle("Update Required");
+
+        VBox content = new VBox(20);
+        content.setAlignment(Pos.CENTER);
+        content.setPadding(new Insets(40));
+        content.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #0f0f1e);" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 0, 0, 0.6), 30, 0.6, 0, 0);"
+        );
+
+        Label icon = new Label("⚠");
+        icon.setStyle("-fx-font-size: 64; -fx-text-fill: #ff4444;");
+
+        Label title = new Label("UPDATE REQUIRED");
+        title.setStyle(
+                "-fx-font-size: 28; -fx-font-weight: bold; " +
+                        "-fx-text-fill: #ff4444; -fx-font-family: 'Arial Black';"
+        );
+
+        // Scrollable message container
+        VBox messageContainer = new VBox(10);
+        messageContainer.setAlignment(Pos.CENTER);
+        messageContainer.setMaxWidth(550);
+        messageContainer.setPrefHeight(Region.USE_COMPUTED_SIZE);
+
+        Label message = new Label(
+                "Your version of Chroma Flood is outdated.\n\n" +
+                        "Please download the latest version to continue playing.\n\n" +
+                        "Current Version: " + APP_VERSION
+        );
+        message.setStyle(
+                "-fx-font-size: 16; -fx-text-fill: #ffffff; " +
+                        "-fx-text-alignment: center; -fx-line-spacing: 5px;"
+        );
+        message.setWrapText(true);
+        message.setMaxWidth(550);
+        message.setAlignment(Pos.CENTER);
+
+        // Add padding around the message
+        VBox messagePadding = new VBox(message);
+        messagePadding.setPadding(new Insets(10, 20, 10, 20));
+        messagePadding.setAlignment(Pos.CENTER);
+
+        ScrollPane messageScroll = new ScrollPane(messagePadding);
+        messageScroll.setFitToWidth(true);
+        messageScroll.setMaxHeight(180);
+        messageScroll.setPrefViewportHeight(Region.USE_COMPUTED_SIZE);
+        messageScroll.setStyle(
+                "-fx-background: transparent; " +
+                        "-fx-background-color: transparent; " +
+                        "-fx-border-color: transparent;"
+        );
+        messageScroll.setPannable(true);
+        messageScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        messageScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+
+        messageContainer.getChildren().add(messageScroll);
+
+        Button downloadBtn = new Button("Download Update");
+        String downloadBtnBaseStyle = "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
+                "-fx-text-fill: white; -fx-font-weight: bold; " +
+                "-fx-font-size: 15; -fx-padding: 12 35; " +
+                "-fx-background-radius: 10; -fx-cursor: hand;";
+
+        String downloadBtnHoverStyle = "-fx-background-color: linear-gradient(to bottom, #ff6666, #ff4444); " +
+                "-fx-text-fill: white; -fx-font-weight: bold; " +
+                "-fx-font-size: 15; -fx-padding: 12 35; " +
+                "-fx-background-radius: 10; -fx-cursor: hand; " +
+                "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.8), 15, 0.5, 0, 0);";
+
+        downloadBtn.setStyle(downloadBtnBaseStyle);
+        downloadBtn.setOnMouseEntered(e -> downloadBtn.setStyle(downloadBtnHoverStyle));
+        downloadBtn.setOnMouseExited(e -> downloadBtn.setStyle(downloadBtnBaseStyle));
+        downloadBtn.setOnAction(e -> {
+            try {
+                // Open download page in browser
+                java.awt.Desktop.getDesktop().browse(
+                        new URI("https://yourwebsite.com/download") // Download link for new version
+                );
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+            Platform.exit();
+        });
+
+        Button exitBtn = new Button("Exit");
+        String exitBtnBaseStyle = "-fx-background-color: #666666; -fx-text-fill: white; " +
+                "-fx-font-weight: bold; -fx-font-size: 14; " +
+                "-fx-padding: 10 28; -fx-background-radius: 10; -fx-cursor: hand;";
+
+        String exitBtnHoverStyle = "-fx-background-color: #777777; -fx-text-fill: white; " +
+                "-fx-font-weight: bold; -fx-font-size: 14; " +
+                "-fx-padding: 10 28; -fx-background-radius: 10; -fx-cursor: hand;";
+
+        exitBtn.setStyle(exitBtnBaseStyle);
+        exitBtn.setOnMouseEntered(e -> exitBtn.setStyle(exitBtnHoverStyle));
+        exitBtn.setOnMouseExited(e -> exitBtn.setStyle(exitBtnBaseStyle));
+        exitBtn.setOnAction(e -> Platform.exit());
+
+        HBox buttons = new HBox(15, downloadBtn, exitBtn);
+        buttons.setAlignment(Pos.CENTER);
+
+        content.getChildren().addAll(icon, title, messageContainer, buttons);
+
+        Scene scene = new Scene(content, 650, 500);
+        scene.setFill(Color.TRANSPARENT);
+        dialog.setScene(scene);
+
+        // Prevent closing
+        dialog.setOnCloseRequest(event -> event.consume());
+
+        dialog.show();
+    }
+
     @Override
     public void start(Stage primaryStage) {
         // Check for existing instance FIRST
@@ -901,10 +1387,11 @@ public class ChromaFloodSystem extends Application {
         }
 
         this.primaryStage = primaryStage;
-        cacheDefaultProfilePic();
-        updateImageResources();
+
         root = new BorderPane();
         Scene scene = new Scene(root, 1000, 800);
+
+        // Key event handlers
         scene.addEventHandler(KeyEvent.KEY_PRESSED, event -> {
             KeyCode code = event.getCode();
             if (code.isDigitKey()) {
@@ -938,48 +1425,66 @@ public class ChromaFloodSystem extends Application {
                 }
             }
         });
+
         primaryStage.setScene(scene);
         primaryStage.setTitle("Chroma Flood");
 
-        // Create resources/images folder and download default profile picture
-        File imagesFolder = new File("resources/images");
-        if (!imagesFolder.exists()) {
-            imagesFolder.mkdirs();
-        }
-        File defaultProfilePic = new File("resources/images/default_profile.png");
-        if (!defaultProfilePic.exists()) {
-            try {
-                // Convert Google Drive sharing link to direct download link
-                String fileId = "1m1yQ0995BXEa4tBMS_R2p9jY81uc4kAF";
-                String downloadUrl = "https://drive.google.com/uc?export=download&id=" + fileId;
-                InputStream in = new URL(downloadUrl).openStream();
-                Files.copy(in, defaultProfilePic.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                System.out.println("Default profile picture downloaded to: " + defaultProfilePic.getPath());
-            } catch (IOException e) {
-                System.err.println("Failed to download default profile picture: " + e.getMessage());
+        // Disable fullscreen
+        primaryStage.setFullScreen(false);
+        primaryStage.setResizable(true);
+        primaryStage.setFullScreenExitHint("");
+
+        primaryStage.fullScreenProperty().addListener((obs, wasFull, isFull) -> {
+            if (isFull) {
+                Platform.runLater(() -> primaryStage.setFullScreen(false));
             }
-        }
+        });
 
-        // Initialize audio resources
-        downloadAudioResources();
+        scene.setOnKeyPressed(event -> {
+            if (event.getCode() == KeyCode.F11) {
+                event.consume();
+            }
+        });
 
-        // Add this call in the start() method, after downloadAudioResources() and before the session check
-        downloadImageResources();
-        level1Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[0]).toURI().toString());
-        level2Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[1]).toURI().toString());
-        level3Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[2]).toURI().toString());
-        level4Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[3]).toURI().toString());
-        level5Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[4]).toURI().toString());
-        level6Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[5]).toURI().toString());
+        scene.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+            if (event.isAltDown() && event.getCode() == KeyCode.ENTER) {
+                event.consume();
+            }
+        });
 
-        // Show loading screen while checking session
+        // Show loading screen
         showLoadingScreen();
 
-        // Check session in a background task
+        // Start with version check, which will handle everything else
+        checkAppVersion(() -> {
+            // Only proceed if version is OK
+            // Initialize resources ONCE
+            cacheDefaultProfilePic();
+            updateImageResources();
+            downloadAudioResources();
+            downloadImageResources();
+
+            // Load level images
+            level1Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[0]).toURI().toString());
+            level2Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[1]).toURI().toString());
+            level3Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[2]).toURI().toString());
+            level4Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[3]).toURI().toString());
+            level5Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[4]).toURI().toString());
+            level6Image = new Image(new File(IMAGE_FOLDER + File.separator + IMAGE_FILES[5]).toURI().toString());
+
+            // Check session and start
+            checkSessionAndStart();
+        });
+
+        startConnectionMonitoring();
+
+        primaryStage.show();
+    }
+
+    private void checkSessionAndStart() {
         Task<Void> sessionTask = new Task<>() {
             @Override
             protected Void call() throws Exception {
-                // Simulate minimum loading time
                 Thread.sleep(2000);
                 return null;
             }
@@ -993,7 +1498,12 @@ public class ChromaFloodSystem extends Application {
 
                 loadFullProfileFromSupabase(savedUser, () -> {
                     profileLoaded.set(true);
-                    decidePostLoginScreen();          // ← changed line
+                    decidePostLoginScreen();
+
+                    // ADD THIS
+                    if (!savedUser.equalsIgnoreCase(ADMIN_USERNAME)) {
+                        startMaintenanceMonitoring();
+                    }
                 });
             } else {
                 showLoginScreen();
@@ -1010,45 +1520,19 @@ public class ChromaFloodSystem extends Application {
         new Thread(sessionTask).start();
 
         startConnectionMonitoring();
-
-        // Add key binding for full-screen toggle (F11)
-        scene.setOnKeyPressed(event -> {
-            if (event.getCode() == KeyCode.F11) {
-                event.consume(); // Blocks the default F11 behavior
-                // Optionally show a message or do nothing
-                // System.out.println("Full-screen mode is disabled in this game.");
-            }
-        });
-
-        primaryStage.setFullScreen(false);
-        primaryStage.setResizable(true); // or false if you don't want resizing
-        primaryStage.fullScreenProperty().addListener((obs, old, nowFullScreen) -> {
-            if (nowFullScreen) {
-                Platform.runLater(() -> primaryStage.setFullScreen(false));
-            }
-        });
-
-        primaryStage.setFullScreenExitHint(""); // Removes the "[Press ESC to exit full screen]" hint
-        primaryStage.fullScreenProperty().addListener((obs, wasFull, isFull) -> {
-            if (isFull) {
-                // If somehow full-screen gets enabled (e.g. via menu or alt+enter), immediately exit it
-                Platform.runLater(() -> primaryStage.setFullScreen(false));
-            }
-        });
-
-        scene.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
-            if (event.isAltDown() && event.getCode() == KeyCode.ENTER) {
-                event.consume();
-            }
-        });
-
-        primaryStage.show();
     }
 
     @Override
     public void stop() {
         System.out.println("Application shutting down...");
 
+        stopMaintenanceMonitoring();
+        if (connectionCheckTimer != null) {
+            connectionCheckTimer.stop();
+        }
+        if (executor != null && !executor.isShutdown()) {
+            executor.shutdown();
+        }
         // 1. Release instance lock
         releaseInstanceLock();
 
@@ -1666,22 +2150,27 @@ public class ChromaFloodSystem extends Application {
         });
 
         StackPane passwordContainer = new StackPane();
+        passwordContainer.setPrefWidth(220);
+        passwordContainer.setMaxWidth(220);
+        passwordContainer.setMinWidth(220);
         passwordContainer.setOpacity(0);
         passwordContainer.setTranslateX(-50);
 
         PasswordField passwordField = new PasswordField();
         passwordField.setPromptText("Password");
-        passwordField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
+        passwordField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
         passwordField.setPrefWidth(220);
         passwordField.setMaxWidth(220);
+        passwordField.setMinWidth(220);
         passwordField.setMinHeight(40);
         passwordField.setMaxHeight(40);
 
         TextField passwordTextField = new TextField();
         passwordTextField.setPromptText("Password");
-        passwordTextField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
+        passwordTextField.setStyle("-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;");
         passwordTextField.setPrefWidth(220);
         passwordTextField.setMaxWidth(220);
+        passwordTextField.setMinWidth(220);
         passwordTextField.setMinHeight(40);
         passwordTextField.setMaxHeight(40);
         passwordTextField.setVisible(false);
@@ -1690,14 +2179,26 @@ public class ChromaFloodSystem extends Application {
         // Bind the text properties so they stay in sync
         passwordTextField.textProperty().bindBidirectional(passwordField.textProperty());
 
+        // Character limit for password fields
+        passwordField.textProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue.length() > 32) {
+                passwordField.setText(oldValue);
+            }
+        });
+        passwordTextField.textProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue.length() > 32) {
+                passwordTextField.setText(oldValue);
+            }
+        });
+
         // Create toggle button with eye icon
         Button togglePasswordButton = new Button("👁");
-        togglePasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00FFFF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
+        togglePasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #000000; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
         togglePasswordButton.setPrefSize(30, 30);
         togglePasswordButton.setFocusTraversable(false);
 
         StackPane.setAlignment(togglePasswordButton, Pos.CENTER_RIGHT);
-        StackPane.setMargin(togglePasswordButton, new Insets(0, 8, 0, 0));
+        StackPane.setMargin(togglePasswordButton, new Insets(0, 10, 0, 0));
 
         // Toggle password visibility
         togglePasswordButton.setOnAction(event -> {
@@ -1724,8 +2225,8 @@ public class ChromaFloodSystem extends Application {
 
         // Apply focus styling to both fields
         passwordField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
-            String focusedStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
-            String normalStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
+            String focusedStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
+            String normalStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
 
             if (isNowFocused) {
                 passwordField.setStyle(focusedStyle);
@@ -1741,8 +2242,8 @@ public class ChromaFloodSystem extends Application {
         });
 
         passwordTextField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
-            String focusedStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
-            String normalStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
+            String focusedStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
+            String normalStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
 
             if (isNowFocused) {
                 passwordField.setStyle(focusedStyle);
@@ -1765,12 +2266,75 @@ public class ChromaFloodSystem extends Application {
         keepLoggedInCheckBox.setOpacity(0);
         keepLoggedInCheckBox.setTranslateY(10);
 
-        Button loginButton = createAnimatedButton("Login", "#4444FF", "#0000CC", "#6666FF", "#2222EE");
+        Button loginButton = new Button("Login");
+        loginButton.setStyle(
+                "-fx-background-color: linear-gradient(to right, #00D9FF, #0099FF);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-family: 'Arial Black', 'Arial';" +
+                        "-fx-font-size: 16;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 40;" +
+                        "-fx-background-radius: 12;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.6), 15, 0.6, 0, 0);"
+        );
         loginButton.setPrefWidth(220);
-        loginButton.setMinHeight(40);
-        loginButton.setMaxHeight(40);
+        loginButton.setMinHeight(45);
+        loginButton.setMaxHeight(45);
         loginButton.setOpacity(0);
         loginButton.setTranslateX(50);
+
+        // Hover effect - brighter gradient and stronger glow
+        loginButton.setOnMouseEntered(e -> {
+            loginButton.setStyle(
+                    "-fx-background-color: linear-gradient(to right, #00EEFF, #00AAFF);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-family: 'Arial Black', 'Arial';" +
+                            "-fx-font-size: 16;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 12 40;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.9), 20, 0.7, 0, 2);"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), loginButton);
+            st.setToX(1.05);
+            st.setToY(1.05);
+            st.play();
+        });
+
+        loginButton.setOnMouseExited(e -> {
+            loginButton.setStyle(
+                    "-fx-background-color: linear-gradient(to right, #00D9FF, #0099FF);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-family: 'Arial Black', 'Arial';" +
+                            "-fx-font-size: 16;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 12 40;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.6), 15, 0.6, 0, 0);"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), loginButton);
+            st.setToX(1.0);
+            st.setToY(1.0);
+            st.play();
+        });
+
+        // Press effect
+        loginButton.setOnMousePressed(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), loginButton);
+            st.setToX(0.98);
+            st.setToY(0.98);
+            st.play();
+        });
+
+        loginButton.setOnMouseReleased(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), loginButton);
+            st.setToX(1.05);
+            st.setToY(1.05);
+            st.play();
+        });
 
         loginButton.setOnAction(event -> {
             String user = usernameField.getText().trim();
@@ -1788,12 +2352,83 @@ public class ChromaFloodSystem extends Application {
             loginWithSupabase(user, pass, loginButton, keepLoggedInCheckBox.isSelected());
         });
 
-        Button goToRegisterButton = createAnimatedButton("Go to Register", "#44FF44", "#00CC00", "#66FF66", "#22EE22");
+        Button goToRegisterButton = new Button("Go to Register");
+        goToRegisterButton.setStyle(
+                "-fx-background-color: transparent;" +
+                        "-fx-border-color: #00D9FF;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-border-radius: 12;" +
+                        "-fx-background-radius: 12;" +
+                        "-fx-text-fill: #00D9FF;" +
+                        "-fx-font-family: 'Arial', 'Arial';" +
+                        "-fx-font-size: 14;" +
+                        "-fx-font-weight: 600;" +
+                        "-fx-padding: 12 40;" +
+                        "-fx-cursor: hand;"
+        );
         goToRegisterButton.setPrefWidth(220);
-        goToRegisterButton.setMinHeight(40);
-        goToRegisterButton.setMaxHeight(40);
+        goToRegisterButton.setMinHeight(45);
+        goToRegisterButton.setMaxHeight(45);
         goToRegisterButton.setOpacity(0);
         goToRegisterButton.setTranslateX(50);
+
+        // Hover effect - subtle glow and fill
+        goToRegisterButton.setOnMouseEntered(e -> {
+            goToRegisterButton.setStyle(
+                    "-fx-background-color: rgba(0, 217, 255, 0.15);" +
+                            "-fx-border-color: #00EEFF;" +
+                            "-fx-border-width: 2;" +
+                            "-fx-border-radius: 12;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-text-fill: #00EEFF;" +
+                            "-fx-font-family: 'Arial', 'Arial';" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: 600;" +
+                            "-fx-padding: 12 40;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.4), 10, 0.5, 0, 0);"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), goToRegisterButton);
+            st.setToX(1.03);
+            st.setToY(1.03);
+            st.play();
+        });
+
+        goToRegisterButton.setOnMouseExited(e -> {
+            goToRegisterButton.setStyle(
+                    "-fx-background-color: transparent;" +
+                            "-fx-border-color: #00D9FF;" +
+                            "-fx-border-width: 2;" +
+                            "-fx-border-radius: 12;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-text-fill: #00D9FF;" +
+                            "-fx-font-family: 'Arial', 'Arial';" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: 600;" +
+                            "-fx-padding: 12 40;" +
+                            "-fx-cursor: hand;"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), goToRegisterButton);
+            st.setToX(1.0);
+            st.setToY(1.0);
+            st.play();
+        });
+
+        // Press effect
+        goToRegisterButton.setOnMousePressed(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), goToRegisterButton);
+            st.setToX(0.98);
+            st.setToY(0.98);
+            st.play();
+        });
+
+        goToRegisterButton.setOnMouseReleased(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), goToRegisterButton);
+            st.setToX(1.03);
+            st.setToY(1.03);
+            st.play();
+        });
+
         goToRegisterButton.setOnAction(event -> {
             animateOutroAndTransition(container, loginBox, loginButton, goToRegisterButton,
                     backgroundAnimation, () -> showRegisterScreen());
@@ -2077,10 +2712,76 @@ public class ChromaFloodSystem extends Application {
 
         File[] selectedFile = {null};
 
-        Button uploadButton = createAnimatedButton("Upload Picture", "#FFAA00", "#CC8800", "#FFCC33", "#EEAA22");
+        Button uploadButton = new Button("Upload Picture");
+        uploadButton.setStyle(
+                "-fx-background-color: linear-gradient(to right, #FFA500, #FF8C00);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-family: 'Arial Black', 'Arial';" +
+                        "-fx-font-size: 14;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 10 30;" +
+                        "-fx-background-radius: 12;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 165, 0, 0.5), 12, 0.6, 0, 0);"
+        );
         uploadButton.setPrefWidth(200);
+        uploadButton.setMinHeight(42);
+        uploadButton.setMaxHeight(42);
         uploadButton.setOpacity(0);
         uploadButton.setTranslateY(20);
+
+        // Hover effect
+        uploadButton.setOnMouseEntered(e -> {
+            uploadButton.setStyle(
+                    "-fx-background-color: linear-gradient(to right, #FFB520, #FFA020);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-family: 'Arial Black', 'Arial';" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 10 30;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 165, 0, 0.8), 15, 0.7, 0, 2);"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), uploadButton);
+            st.setToX(1.05);
+            st.setToY(1.05);
+            st.play();
+        });
+
+        uploadButton.setOnMouseExited(e -> {
+            uploadButton.setStyle(
+                    "-fx-background-color: linear-gradient(to right, #FFA500, #FF8C00);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-family: 'Arial Black', 'Arial';" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 10 30;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(255, 165, 0, 0.5), 12, 0.6, 0, 0);"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), uploadButton);
+            st.setToX(1.0);
+            st.setToY(1.0);
+            st.play();
+        });
+
+        // Press effect
+        uploadButton.setOnMousePressed(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), uploadButton);
+            st.setToX(0.98);
+            st.setToY(0.98);
+            st.play();
+        });
+
+        uploadButton.setOnMouseReleased(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), uploadButton);
+            st.setToX(1.05);
+            st.setToY(1.05);
+            st.play();
+        });
+
         uploadButton.setOnAction(event -> {
             FileChooser fileChooser = new FileChooser();
             fileChooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Image Files", "*.png", "*.jpg", "*.jpeg"));
@@ -2150,35 +2851,40 @@ public class ChromaFloodSystem extends Application {
 
         // Password field with slide-in animation
         StackPane passwordContainer = new StackPane();
+        passwordContainer.setPrefWidth(300);
+        passwordContainer.setMaxWidth(300);
+        passwordContainer.setMinWidth(300);
         passwordContainer.setOpacity(0);
         passwordContainer.setTranslateX(50);
 
-        String basePasswordStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
-        String focusedPasswordStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 40 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
+        String basePasswordStyle = "-fx-background-color: rgba(255, 255, 255, 0.9); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: transparent; -fx-border-width: 2; -fx-border-radius: 10;";
+        String focusedPasswordStyle = "-fx-background-color: rgba(255, 255, 255, 1.0); -fx-text-fill: #000000; -fx-font-size: 14; -fx-padding: 10 45 10 10; -fx-background-radius: 10; -fx-border-color: #00FFFF; -fx-border-width: 2; -fx-border-radius: 10;";
 
         PasswordField passwordField = new PasswordField();
         passwordField.setPromptText("Password");
         passwordField.setStyle(basePasswordStyle);
         passwordField.setPrefWidth(300);
         passwordField.setMaxWidth(300);
+        passwordField.setMinWidth(300);
 
         TextField passwordTextField = new TextField();
         passwordTextField.setPromptText("Password");
         passwordTextField.setStyle(basePasswordStyle);
         passwordTextField.setPrefWidth(300);
         passwordTextField.setMaxWidth(300);
+        passwordTextField.setMinWidth(300);
         passwordTextField.setVisible(false);
         passwordTextField.setManaged(false);
 
         passwordTextField.textProperty().bindBidirectional(passwordField.textProperty());
 
         Button togglePasswordButton = new Button("👁");
-        togglePasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00FFFF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
+        togglePasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #000000; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
         togglePasswordButton.setPrefSize(30, 30);
         togglePasswordButton.setFocusTraversable(false);
 
         StackPane.setAlignment(togglePasswordButton, Pos.CENTER_RIGHT);
-        StackPane.setMargin(togglePasswordButton, new Insets(0, 1, 0, 0));
+        StackPane.setMargin(togglePasswordButton, new Insets(0, 10, 0, 0));
 
         togglePasswordButton.setOnAction(event -> {
             if (passwordField.isVisible()) {
@@ -2239,99 +2945,24 @@ public class ChromaFloodSystem extends Application {
 
         passwordContainer.getChildren().addAll(passwordField, passwordTextField, togglePasswordButton);
 
-        passwordField.textProperty().addListener((observable, oldValue, newValue) -> {
-            if (newValue.length() > 32) {
-                passwordField.setText(oldValue);
-            }
-        });
-
         // Confirm Password field with slide-in animation
-        StackPane confirmPasswordContainer = new StackPane();
-        confirmPasswordContainer.setOpacity(0);
-        confirmPasswordContainer.setTranslateX(50);
-
         PasswordField confirmPasswordField = new PasswordField();
         confirmPasswordField.setPromptText("Confirm Password");
-        confirmPasswordField.setStyle(basePasswordStyle);
+        confirmPasswordField.setStyle(baseFieldStyle);
         confirmPasswordField.setPrefWidth(300);
         confirmPasswordField.setMaxWidth(300);
-
-        TextField confirmPasswordTextField = new TextField();
-        confirmPasswordTextField.setPromptText("Confirm Password");
-        confirmPasswordTextField.setStyle(basePasswordStyle);
-        confirmPasswordTextField.setPrefWidth(300);
-        confirmPasswordTextField.setMaxWidth(300);
-        confirmPasswordTextField.setVisible(false);
-        confirmPasswordTextField.setManaged(false);
-
-        confirmPasswordTextField.textProperty().bindBidirectional(confirmPasswordField.textProperty());
-
-        Button toggleConfirmPasswordButton = new Button("👁");
-        toggleConfirmPasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00FFFF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
-        toggleConfirmPasswordButton.setPrefSize(30, 30);
-        toggleConfirmPasswordButton.setFocusTraversable(false);
-
-        StackPane.setAlignment(toggleConfirmPasswordButton, Pos.CENTER_RIGHT);
-        StackPane.setMargin(toggleConfirmPasswordButton, new Insets(0, 1, 0, 0));
-
-        toggleConfirmPasswordButton.setOnAction(event -> {
-            if (confirmPasswordField.isVisible()) {
-                confirmPasswordField.setVisible(false);
-                confirmPasswordField.setManaged(false);
-                confirmPasswordTextField.setVisible(true);
-                confirmPasswordTextField.setManaged(true);
-                toggleConfirmPasswordButton.setText("🙈");
-            } else {
-                confirmPasswordTextField.setVisible(false);
-                confirmPasswordTextField.setManaged(false);
-                confirmPasswordField.setVisible(true);
-                confirmPasswordField.setManaged(true);
-                toggleConfirmPasswordButton.setText("👁");
-            }
-            root.requestFocus();
-        });
+        confirmPasswordField.setOpacity(0);
+        confirmPasswordField.setTranslateX(50);
 
         confirmPasswordField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
             if (isNowFocused) {
                 confirmPasswordField.setStyle(focusedFieldStyle);
-                confirmPasswordTextField.setStyle(focusedFieldStyle);
                 confirmPasswordField.setEffect(focusGlow);
-                confirmPasswordTextField.setEffect(focusGlow);
             } else {
                 confirmPasswordField.setStyle(baseFieldStyle);
-                confirmPasswordTextField.setStyle(baseFieldStyle);
                 confirmPasswordField.setEffect(null);
-                confirmPasswordTextField.setEffect(null);
             }
         });
-
-        confirmPasswordTextField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
-            if (isNowFocused) {
-                confirmPasswordField.setStyle(focusedFieldStyle);
-                confirmPasswordTextField.setStyle(focusedFieldStyle);
-                confirmPasswordField.setEffect(focusGlow);
-                confirmPasswordTextField.setEffect(focusGlow);
-            } else {
-                confirmPasswordField.setStyle(baseFieldStyle);
-                confirmPasswordTextField.setStyle(baseFieldStyle);
-                confirmPasswordField.setEffect(null);
-                confirmPasswordTextField.setEffect(null);
-            }
-        });
-
-        confirmPasswordField.textProperty().addListener((observable, oldValue, newValue) -> {
-            if (newValue.length() > 32) {
-                confirmPasswordField.setText(oldValue);
-            }
-        });
-
-        confirmPasswordTextField.textProperty().addListener((observable, oldValue, newValue) -> {
-            if (newValue.length() > 32) {
-                confirmPasswordTextField.setText(oldValue);
-            }
-        });
-
-        confirmPasswordContainer.getChildren().addAll(confirmPasswordField, confirmPasswordTextField, toggleConfirmPasswordButton);
 
         confirmPasswordField.textProperty().addListener((observable, oldValue, newValue) -> {
             if (newValue.length() > 32) {
@@ -2344,10 +2975,78 @@ public class ChromaFloodSystem extends Application {
         spacer.setPrefHeight(10);
 
         // Animated buttons
-        Button registerButton = createAnimatedButton("Register", "#44FF44", "#00CC00", "#66FF66", "#22EE22");
+        Button registerButton = new Button("Register");
+        registerButton.setStyle(
+                "-fx-background-color: linear-gradient(to right, #00D9FF, #0099FF);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-family: 'Arial Black', 'Arial';" +
+                        "-fx-font-size: 16;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 40;" +
+                        "-fx-background-radius: 12;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.6), 15, 0.6, 0, 0);"
+        );
         registerButton.setPrefWidth(300);
+        registerButton.setMinHeight(45);
+        registerButton.setMaxHeight(45);
         registerButton.setOpacity(0);
         registerButton.setTranslateX(50);
+
+        // Hover effect
+        registerButton.setOnMouseEntered(e -> {
+            registerButton.setStyle(
+                    "-fx-background-color: linear-gradient(to right, #00EEFF, #00AAFF);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-family: 'Arial Black', 'Arial';" +
+                            "-fx-font-size: 16;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 12 40;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.9), 20, 0.7, 0, 2);"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), registerButton);
+            st.setToX(1.05);
+            st.setToY(1.05);
+            st.play();
+        });
+
+        registerButton.setOnMouseExited(e -> {
+            if (!registerButton.isDisabled()) {
+                registerButton.setStyle(
+                        "-fx-background-color: linear-gradient(to right, #00D9FF, #0099FF);" +
+                                "-fx-text-fill: white;" +
+                                "-fx-font-family: 'Arial Black', 'Arial';" +
+                                "-fx-font-size: 16;" +
+                                "-fx-font-weight: bold;" +
+                                "-fx-padding: 12 40;" +
+                                "-fx-background-radius: 12;" +
+                                "-fx-cursor: hand;" +
+                                "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.6), 15, 0.6, 0, 0);"
+                );
+            }
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), registerButton);
+            st.setToX(1.0);
+            st.setToY(1.0);
+            st.play();
+        });
+
+        // Press effect
+        registerButton.setOnMousePressed(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), registerButton);
+            st.setToX(0.98);
+            st.setToY(0.98);
+            st.play();
+        });
+
+        registerButton.setOnMouseReleased(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), registerButton);
+            st.setToX(1.05);
+            st.setToY(1.05);
+            st.play();
+        });
+
         registerButton.setOnAction(event -> {
             String user = usernameField.getText().trim();
             String pass = passwordField.getText().trim();
@@ -2391,16 +3090,89 @@ public class ChromaFloodSystem extends Application {
             signupWithSupabase(user, pass, profilePicBytes, registerButton);
         });
 
-        Button goToLoginButton = createAnimatedButton("Go to Login", "#4444FF", "#0000CC", "#6666FF", "#2222EE");
+        Button goToLoginButton = new Button("Go to Login");
+        goToLoginButton.setStyle(
+                "-fx-background-color: transparent;" +
+                        "-fx-border-color: #00D9FF;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-border-radius: 12;" +
+                        "-fx-background-radius: 12;" +
+                        "-fx-text-fill: #00D9FF;" +
+                        "-fx-font-family: 'Arial', 'Arial';" +
+                        "-fx-font-size: 14;" +
+                        "-fx-font-weight: 600;" +
+                        "-fx-padding: 12 40;" +
+                        "-fx-cursor: hand;"
+        );
         goToLoginButton.setPrefWidth(300);
+        goToLoginButton.setMinHeight(45);
+        goToLoginButton.setMaxHeight(45);
         goToLoginButton.setOpacity(0);
         goToLoginButton.setTranslateX(50);
+
+        // Hover effect
+        goToLoginButton.setOnMouseEntered(e -> {
+            goToLoginButton.setStyle(
+                    "-fx-background-color: rgba(0, 217, 255, 0.15);" +
+                            "-fx-border-color: #00EEFF;" +
+                            "-fx-border-width: 2;" +
+                            "-fx-border-radius: 12;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-text-fill: #00EEFF;" +
+                            "-fx-font-family: 'Arial', 'Arial';" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: 600;" +
+                            "-fx-padding: 12 40;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-effect: dropshadow(gaussian, rgba(0, 217, 255, 0.4), 10, 0.5, 0, 0);"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), goToLoginButton);
+            st.setToX(1.03);
+            st.setToY(1.03);
+            st.play();
+        });
+
+        goToLoginButton.setOnMouseExited(e -> {
+            goToLoginButton.setStyle(
+                    "-fx-background-color: transparent;" +
+                            "-fx-border-color: #00D9FF;" +
+                            "-fx-border-width: 2;" +
+                            "-fx-border-radius: 12;" +
+                            "-fx-background-radius: 12;" +
+                            "-fx-text-fill: #00D9FF;" +
+                            "-fx-font-family: 'Arial', 'Arial';" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: 600;" +
+                            "-fx-padding: 12 40;" +
+                            "-fx-cursor: hand;"
+            );
+            ScaleTransition st = new ScaleTransition(Duration.millis(100), goToLoginButton);
+            st.setToX(1.0);
+            st.setToY(1.0);
+            st.play();
+        });
+
+        // Press effect
+        goToLoginButton.setOnMousePressed(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), goToLoginButton);
+            st.setToX(0.98);
+            st.setToY(0.98);
+            st.play();
+        });
+
+        goToLoginButton.setOnMouseReleased(e -> {
+            ScaleTransition st = new ScaleTransition(Duration.millis(50), goToLoginButton);
+            st.setToX(1.03);
+            st.setToY(1.03);
+            st.play();
+        });
+
         goToLoginButton.setOnAction(event -> {
             animateOutroAndTransition(container, rightSection, registerButton, goToLoginButton,
                     backgroundAnimation, () -> showLoginScreen());
         });
 
-        rightSection.getChildren().addAll(usernameField, passwordContainer, confirmPasswordContainer, spacer, registerButton, goToLoginButton);
+        rightSection.getChildren().addAll(usernameField, passwordContainer, confirmPasswordField, spacer, registerButton, goToLoginButton);
 
         // Add sections to container
         container.getChildren().addAll(leftSection, rightSection);
@@ -2479,11 +3251,11 @@ public class ChromaFloodSystem extends Application {
 
                 // Confirm Password field
                 new KeyFrame(Duration.millis(600),
-                        new KeyValue(confirmPasswordContainer.opacityProperty(), 0),
-                        new KeyValue(confirmPasswordContainer.translateXProperty(), 50)),
+                        new KeyValue(confirmPasswordField.opacityProperty(), 0),
+                        new KeyValue(confirmPasswordField.translateXProperty(), 50)),
                 new KeyFrame(Duration.millis(1000),
-                        new KeyValue(confirmPasswordContainer.opacityProperty(), 1, Interpolator.EASE_OUT),
-                        new KeyValue(confirmPasswordContainer.translateXProperty(), 0, Interpolator.EASE_OUT)),
+                        new KeyValue(confirmPasswordField.opacityProperty(), 1, Interpolator.EASE_OUT),
+                        new KeyValue(confirmPasswordField.translateXProperty(), 0, Interpolator.EASE_OUT)),
 
                 // Register button
                 new KeyFrame(Duration.millis(700),
@@ -2720,6 +3492,7 @@ public class ChromaFloodSystem extends Application {
                                 saveProgress();
                             }
                             showLevelSelectScreen();
+                            startMaintenanceMonitoring();
                         });
 
                     } else {
@@ -4025,24 +4798,166 @@ public class ChromaFloodSystem extends Application {
             Label passwordHeader = new Label("Change Password");
             passwordHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 15; -fx-font-weight: 600;");
 
+            // Base styles for password fields
+            String basePasswordStyle = "-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12 45 12 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;";
+            String hoverPasswordStyle = "-fx-background-color: rgba(45, 45, 70, 0.9); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12 45 12 12; -fx-background-radius: 10; -fx-border-color: rgba(120, 120, 255, 0.5); -fx-border-width: 1; -fx-border-radius: 10;";
+
+            // Current Password with toggle
+            StackPane oldPasswordContainer = new StackPane();
+
             PasswordField oldPasswordField = new PasswordField();
             oldPasswordField.setPromptText("Current Password");
-            oldPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;");
+            oldPasswordField.setStyle(basePasswordStyle);
+
+            TextField oldPasswordTextField = new TextField();
+            oldPasswordTextField.setPromptText("Current Password");
+            oldPasswordTextField.setStyle(basePasswordStyle);
+            oldPasswordTextField.setVisible(false);
+            oldPasswordTextField.setManaged(false);
+
+            oldPasswordTextField.textProperty().bindBidirectional(oldPasswordField.textProperty());
+
+            // Character limit for old password
+            oldPasswordField.textProperty().addListener((obs, oldValue, newValue) -> {
+                if (newValue.length() > 32) {
+                    oldPasswordField.setText(oldValue);
+                }
+            });
+            oldPasswordTextField.textProperty().addListener((obs, oldValue, newValue) -> {
+                if (newValue.length() > 32) {
+                    oldPasswordTextField.setText(oldValue);
+                }
+            });
+
+            Button toggleOldPasswordButton = new Button("👁");
+            toggleOldPasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00D9FF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
+            toggleOldPasswordButton.setPrefSize(30, 30);
+            toggleOldPasswordButton.setFocusTraversable(false);
+
+            StackPane.setAlignment(toggleOldPasswordButton, Pos.CENTER_RIGHT);
+            StackPane.setMargin(toggleOldPasswordButton, new Insets(0, 10, 0, 0));
+
+            toggleOldPasswordButton.setOnAction(ev -> {
+                if (oldPasswordField.isVisible()) {
+                    oldPasswordField.setVisible(false);
+                    oldPasswordField.setManaged(false);
+                    oldPasswordTextField.setVisible(true);
+                    oldPasswordTextField.setManaged(true);
+                    toggleOldPasswordButton.setText("🙈");
+                } else {
+                    oldPasswordTextField.setVisible(false);
+                    oldPasswordTextField.setManaged(false);
+                    oldPasswordField.setVisible(true);
+                    oldPasswordField.setManaged(true);
+                    toggleOldPasswordButton.setText("👁");
+                }
+                mainContainer.requestFocus();
+            });
+
+            // Hover effects for old password
+            oldPasswordField.setOnMouseEntered(e -> {
+                oldPasswordField.setStyle(hoverPasswordStyle);
+                oldPasswordTextField.setStyle(hoverPasswordStyle);
+            });
+            oldPasswordField.setOnMouseExited(e -> {
+                oldPasswordField.setStyle(basePasswordStyle);
+                oldPasswordTextField.setStyle(basePasswordStyle);
+            });
+            oldPasswordTextField.setOnMouseEntered(e -> {
+                oldPasswordField.setStyle(hoverPasswordStyle);
+                oldPasswordTextField.setStyle(hoverPasswordStyle);
+            });
+            oldPasswordTextField.setOnMouseExited(e -> {
+                oldPasswordField.setStyle(basePasswordStyle);
+                oldPasswordTextField.setStyle(basePasswordStyle);
+            });
+
+            oldPasswordContainer.getChildren().addAll(oldPasswordField, oldPasswordTextField, toggleOldPasswordButton);
+
+            // New Password with toggle
+            StackPane newPasswordContainer = new StackPane();
 
             PasswordField newPasswordField = new PasswordField();
             newPasswordField.setPromptText("New Password");
-            newPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;");
+            newPasswordField.setStyle(basePasswordStyle);
 
+            TextField newPasswordTextField = new TextField();
+            newPasswordTextField.setPromptText("New Password");
+            newPasswordTextField.setStyle(basePasswordStyle);
+            newPasswordTextField.setVisible(false);
+            newPasswordTextField.setManaged(false);
+
+            newPasswordTextField.textProperty().bindBidirectional(newPasswordField.textProperty());
+
+            // Character limit for new password
+            newPasswordField.textProperty().addListener((obs, oldValue, newValue) -> {
+                if (newValue.length() > 32) {
+                    newPasswordField.setText(oldValue);
+                }
+            });
+            newPasswordTextField.textProperty().addListener((obs, oldValue, newValue) -> {
+                if (newValue.length() > 32) {
+                    newPasswordTextField.setText(oldValue);
+                }
+            });
+
+            Button toggleNewPasswordButton = new Button("👁");
+            toggleNewPasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00D9FF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
+            toggleNewPasswordButton.setPrefSize(30, 30);
+            toggleNewPasswordButton.setFocusTraversable(false);
+
+            StackPane.setAlignment(toggleNewPasswordButton, Pos.CENTER_RIGHT);
+            StackPane.setMargin(toggleNewPasswordButton, new Insets(0, 10, 0, 0));
+
+            toggleNewPasswordButton.setOnAction(ev -> {
+                if (newPasswordField.isVisible()) {
+                    newPasswordField.setVisible(false);
+                    newPasswordField.setManaged(false);
+                    newPasswordTextField.setVisible(true);
+                    newPasswordTextField.setManaged(true);
+                    toggleNewPasswordButton.setText("🙈");
+                } else {
+                    newPasswordTextField.setVisible(false);
+                    newPasswordTextField.setManaged(false);
+                    newPasswordField.setVisible(true);
+                    newPasswordField.setManaged(true);
+                    toggleNewPasswordButton.setText("👁");
+                }
+                mainContainer.requestFocus();
+            });
+
+            // Hover effects for new password
+            newPasswordField.setOnMouseEntered(e -> {
+                newPasswordField.setStyle(hoverPasswordStyle);
+                newPasswordTextField.setStyle(hoverPasswordStyle);
+            });
+            newPasswordField.setOnMouseExited(e -> {
+                newPasswordField.setStyle(basePasswordStyle);
+                newPasswordTextField.setStyle(basePasswordStyle);
+            });
+            newPasswordTextField.setOnMouseEntered(e -> {
+                newPasswordField.setStyle(hoverPasswordStyle);
+                newPasswordTextField.setStyle(hoverPasswordStyle);
+            });
+            newPasswordTextField.setOnMouseExited(e -> {
+                newPasswordField.setStyle(basePasswordStyle);
+                newPasswordTextField.setStyle(basePasswordStyle);
+            });
+
+            newPasswordContainer.getChildren().addAll(newPasswordField, newPasswordTextField, toggleNewPasswordButton);
+
+            // Confirm Password (no toggle)
+            // Confirm Password (no toggle)
             PasswordField confirmPasswordField = new PasswordField();
             confirmPasswordField.setPromptText("Confirm New Password");
             confirmPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;");
 
-            // Hover effects for password fields
-            oldPasswordField.setOnMouseEntered(e -> oldPasswordField.setStyle("-fx-background-color: rgba(45, 45, 70, 0.9); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(120, 120, 255, 0.5); -fx-border-width: 1; -fx-border-radius: 10;"));
-            oldPasswordField.setOnMouseExited(e -> oldPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;"));
-
-            newPasswordField.setOnMouseEntered(e -> newPasswordField.setStyle("-fx-background-color: rgba(45, 45, 70, 0.9); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(120, 120, 255, 0.5); -fx-border-width: 1; -fx-border-radius: 10;"));
-            newPasswordField.setOnMouseExited(e -> newPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;"));
+            // Character limit for confirm password
+            confirmPasswordField.textProperty().addListener((obs, oldValue, newValue) -> {
+                if (newValue.length() > 32) {
+                    confirmPasswordField.setText(oldValue);
+                }
+            });
 
             confirmPasswordField.setOnMouseEntered(e -> confirmPasswordField.setStyle("-fx-background-color: rgba(45, 45, 70, 0.9); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(120, 120, 255, 0.5); -fx-border-width: 1; -fx-border-radius: 10;"));
             confirmPasswordField.setOnMouseExited(e -> confirmPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;"));
@@ -4050,7 +4965,7 @@ public class ChromaFloodSystem extends Application {
             Label passwordHint = new Label("Leave all fields blank to keep your current password");
             passwordHint.setStyle("-fx-text-fill: #888899; -fx-font-size: 11; -fx-font-style: italic; -fx-padding: 5 0 0 0;");
 
-            rightPanel.getChildren().addAll(passwordHeader, oldPasswordField, newPasswordField, confirmPasswordField, passwordHint);
+            rightPanel.getChildren().addAll(passwordHeader, oldPasswordContainer, newPasswordContainer, confirmPasswordField, passwordHint);
 
             // ═══════════════════════════════════════════════════════════
             // CONTENT LAYOUT (LANDSCAPE)
@@ -4354,8 +5269,36 @@ public class ChromaFloodSystem extends Application {
             usernameField.setText(currentUser);
 
             VBox rightPanel = (VBox) contentLayout.getChildren().get(1);
-            ((PasswordField) rightPanel.getChildren().get(1)).clear();
-            ((PasswordField) rightPanel.getChildren().get(2)).clear();
+
+            // Reset old password container
+            StackPane oldPassContainer = (StackPane) rightPanel.getChildren().get(1);
+            PasswordField oldPassField = (PasswordField) oldPassContainer.getChildren().get(0);
+            TextField oldPassTextField = (TextField) oldPassContainer.getChildren().get(1);
+            Button oldPassToggle = (Button) oldPassContainer.getChildren().get(2);
+            oldPassField.clear();
+            oldPassTextField.clear();
+            // Reset to hidden state
+            oldPassField.setVisible(true);
+            oldPassField.setManaged(true);
+            oldPassTextField.setVisible(false);
+            oldPassTextField.setManaged(false);
+            oldPassToggle.setText("👁");
+
+            // Reset new password container
+            StackPane newPassContainer = (StackPane) rightPanel.getChildren().get(2);
+            PasswordField newPassField = (PasswordField) newPassContainer.getChildren().get(0);
+            TextField newPassTextField = (TextField) newPassContainer.getChildren().get(1);
+            Button newPassToggle = (Button) newPassContainer.getChildren().get(2);
+            newPassField.clear();
+            newPassTextField.clear();
+            // Reset to hidden state
+            newPassField.setVisible(true);
+            newPassField.setManaged(true);
+            newPassTextField.setVisible(false);
+            newPassTextField.setManaged(false);
+            newPassToggle.setText("👁");
+
+            // Clear confirm password
             ((PasswordField) rightPanel.getChildren().get(3)).clear();
         }
 
@@ -4691,6 +5634,7 @@ public class ChromaFloodSystem extends Application {
                             showAdminPanel();
                         } else {
                             showLevelSelectScreen();
+                            startMaintenanceMonitoring();
                         }
                     } else {
                         new Alert(AlertType.ERROR, "Server error: " + response.statusCode()).showAndWait();
@@ -5062,9 +6006,10 @@ public class ChromaFloodSystem extends Application {
             overlay.setPadding(new Insets(40));
 
             // Main dialog container
-            resetProgressDialog = new VBox(25);
+// Main dialog container
+            resetProgressDialog = new VBox(20);
             resetProgressDialog.setAlignment(Pos.CENTER);
-            resetProgressDialog.setPadding(new Insets(40));
+            resetProgressDialog.setPadding(new Insets(30));
             resetProgressDialog.setMaxWidth(700);
             resetProgressDialog.setStyle(
                     "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e, #0f3460);" +
@@ -5073,10 +6018,11 @@ public class ChromaFloodSystem extends Application {
             );
 
             // Warning icon and title
+            // Warning icon and title
             Label warningIcon = new Label("⚠");
             warningIcon.setStyle(
                     "-fx-text-fill: #FF4444;" +
-                            "-fx-font-size: 60;" +
+                            "-fx-font-size: 48;" +
                             "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.3), 8, 0.4, 0, 0);"
             );
 
@@ -5084,7 +6030,7 @@ public class ChromaFloodSystem extends Application {
             titleLabel.setStyle(
                     "-fx-text-fill: #FF4444;" +
                             "-fx-font-family: 'Arial Black';" +
-                            "-fx-font-size: 32;" +
+                            "-fx-font-size: 28;" +
                             "-fx-font-weight: bold;" +
                             "-fx-effect: dropshadow(gaussian, rgba(255, 68, 68, 0.6), 10, 0.7, 0, 0);"
             );
@@ -5097,7 +6043,7 @@ public class ChromaFloodSystem extends Application {
                             "-fx-font-weight: bold;"
             );
 
-            VBox titleBox = new VBox(10, warningIcon, titleLabel, subtitleLabel);
+            VBox titleBox = new VBox(8, warningIcon, titleLabel, subtitleLabel);
             titleBox.setAlignment(Pos.CENTER);
 
             // Warning message
@@ -5107,15 +6053,14 @@ public class ChromaFloodSystem extends Application {
                             "• ALL leaderboard records will be DELETED\n" +
                             "• ALL players will be reset to Level 1\n" +
                             "• User accounts will remain active\n\n" +
-                            "⚠ THIS ACTION CANNOT BE UNDONE ⚠\n\n" +
-                            "A new era will begin for all players."
+                            "⚠ THIS ACTION CANNOT BE UNDONE ⚠"
             );
             messageLabel.setStyle(
                     "-fx-text-fill: #FFFFFF;" +
                             "-fx-font-family: 'Arial';" +
-                            "-fx-font-size: 14;" +
+                            "-fx-font-size: 13;" +
                             "-fx-text-alignment: center;" +
-                            "-fx-line-spacing: 4px;"
+                            "-fx-line-spacing: 2px;"
             );
             messageLabel.setWrapText(true);
             messageLabel.setMaxWidth(600);
@@ -5208,7 +6153,7 @@ public class ChromaFloodSystem extends Application {
             StackPane.setAlignment(resetProgressDialog, Pos.CENTER);
 
             // Create scene with transparent background
-            Scene scene = new Scene(overlay, 700, 750);
+            Scene scene = new Scene(overlay, 750, 550);
             scene.setFill(Color.TRANSPARENT);
 
             resetProgressStage.setScene(scene);
@@ -5384,7 +6329,7 @@ public class ChromaFloodSystem extends Application {
         overlay.getChildren().add(dialog);
         StackPane.setAlignment(dialog, Pos.CENTER);
 
-        Scene scene = new Scene(overlay, 750, 580);
+        Scene scene = new Scene(overlay, 750, 500);
         scene.setFill(Color.TRANSPARENT);
         textStage.setScene(scene);
 
@@ -5710,7 +6655,8 @@ public class ChromaFloodSystem extends Application {
     }
 
     private void showBannedDialog(String username, String banReason, boolean hasAppeal, String appealStatus) {
-        Stage dialogStage = new Stage();
+        bannedDialogStage = new Stage();
+        Stage dialogStage = bannedDialogStage;
         dialogStage.initModality(Modality.APPLICATION_MODAL);
         dialogStage.initOwner(primaryStage);
         dialogStage.setTitle("Account Banned");
@@ -5791,9 +6737,8 @@ public class ChromaFloodSystem extends Application {
         okBtn.setOnAction(e -> {
             bgAnim.stop();
             dialogStage.close();
+            bannedDialogStage = null;
         });
-
-        // Appeal button - show based on appeal status
         // Appeal button - show based on appeal status
         if (!hasAppeal) {
             // No appeal submitted yet - show submit button
@@ -5818,6 +6763,7 @@ public class ChromaFloodSystem extends Application {
             appealBtn.setOnAction(e -> {
                 bgAnim.stop();
                 dialogStage.close();
+                bannedDialogStage = null;
                 showAppealSubmissionDialog(username);
             });
             buttonBox.getChildren().add(appealBtn);
@@ -5856,6 +6802,7 @@ public class ChromaFloodSystem extends Application {
                 resubmitBtn.setOnAction(e -> {
                     bgAnim.stop();
                     dialogStage.close();
+                    bannedDialogStage = null;
                     showAppealSubmissionDialog(username);
                 });
                 buttonBox.getChildren().add(resubmitBtn);
@@ -5886,7 +6833,7 @@ public class ChromaFloodSystem extends Application {
         scene.setFill(Color.TRANSPARENT);
         dialogStage.initStyle(StageStyle.TRANSPARENT);
         dialogStage.setScene(scene);
-        dialogStage.showAndWait();
+        dialogStage.show();
     }
 
     // 3. Add method for submitting an appeal:
@@ -5918,21 +6865,23 @@ public class ChromaFloodSystem extends Application {
                         Platform.runLater(() -> {
                             // If appeal is pending, don't allow submission
                             if (hasAppeal && appealStatus.equals("pending")) {
-                                Alert alert = new Alert(Alert.AlertType.WARNING,
+                                showAppealStatusModal(
+                                        "⏳ Appeal Already Pending",
                                         "You already have a PENDING appeal.\n\n" +
-                                                "Please wait for the admin to review your current appeal before submitting a new one.");
-                                alert.setTitle("Appeal Already Pending");
-                                alert.showAndWait();
+                                                "Please wait for the admin to review your current appeal before submitting a new one.",
+                                        "#FFAA00"
+                                );
                                 return;
                             }
 
                             // If appeal is approved, don't allow submission
                             if (hasAppeal && appealStatus.equals("approved")) {
-                                Alert alert = new Alert(Alert.AlertType.INFORMATION,
+                                showAppealStatusModal(
+                                        "✅ Appeal Approved",
                                         "Your appeal has been APPROVED.\n\n" +
-                                                "Please contact an admin to complete the unbanning process.");
-                                alert.setTitle("Appeal Approved");
-                                alert.showAndWait();
+                                                "Please contact an admin to complete the unbanning process.",
+                                        "#44ff44"
+                                );
                                 return;
                             }
 
@@ -5953,89 +6902,406 @@ public class ChromaFloodSystem extends Application {
         });
     }
 
+    private void showAppealStatusModal(String title, String message, String accentColor) {
+        // Create a NEW stage for the modal (instead of trying to overlay on existing stage)
+        Stage modalStage = new Stage();
+        modalStage.initModality(Modality.APPLICATION_MODAL);
+
+        // Set owner based on what's currently open
+        if (bannedDialogStage != null && bannedDialogStage.isShowing()) {
+            modalStage.initOwner(bannedDialogStage);
+        } else if (banAppealsStage != null && banAppealsStage.isShowing()) {
+            modalStage.initOwner(banAppealsStage);
+        } else if (userManagementStage != null && userManagementStage.isShowing()) {
+            modalStage.initOwner(userManagementStage);
+        } else {
+            modalStage.initOwner(primaryStage);
+        }
+
+        modalStage.initStyle(StageStyle.TRANSPARENT);
+        modalStage.setTitle(title);
+        modalStage.setResizable(false);
+
+        // Create overlay background - REMOVED DIMMING (transparent)
+        StackPane overlay = new StackPane();
+        overlay.setStyle("-fx-background-color: transparent;");
+        overlay.setPadding(new Insets(40));
+
+        // Dialog container - increased width to prevent text cutoff
+        VBox dialogBox = new VBox(25);
+        dialogBox.setPadding(new Insets(40));
+        dialogBox.setAlignment(Pos.CENTER);
+        dialogBox.setMaxWidth(700);  // Increased from 600
+        dialogBox.setMinHeight(350);
+        dialogBox.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e, #0f3460);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, " + accentColor + ", 40, 0.6, 0, 0);"
+        );
+
+        // Icon based on status - REDUCED NEON EFFECT
+        String icon = accentColor.equals("#FFAA00") ? "⏳" : "✅";
+        Label iconLabel = new Label(icon);
+        iconLabel.setStyle(
+                "-fx-font-size: 64; " +
+                        "-fx-text-fill: " + accentColor + ";" +
+                        "-fx-effect: dropshadow(gaussian, " + accentColor + ", 8, 0.4, 0, 0);"  // Reduced from 20, 0.8
+        );
+
+        // Title - REDUCED NEON EFFECT
+        Label titleLabel = new Label(title);
+        titleLabel.setStyle(
+                "-fx-font-size: 26; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-text-fill: " + accentColor + ";" +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-effect: dropshadow(gaussian, " + accentColor + ", 4, 0.3, 0, 0);"  // Reduced from 8, 0.6
+        );
+        titleLabel.setWrapText(true);
+        titleLabel.setAlignment(Pos.CENTER);
+        titleLabel.setMaxWidth(640);  // Increased from 540
+
+        // Separator line
+        Region separator = new Region();
+        separator.setPrefHeight(2);
+        separator.setMaxWidth(600);  // Increased from 500
+        separator.setStyle("-fx-background-color: " + accentColor + ";");
+
+        // Message
+        Label messageLabel = new Label(message);
+        messageLabel.setStyle(
+                "-fx-font-size: 15; " +
+                        "-fx-text-fill: #ffffff; " +
+                        "-fx-line-spacing: 8;" +
+                        "-fx-padding: 20 0 20 0;"
+        );
+        messageLabel.setWrapText(true);
+        messageLabel.setAlignment(Pos.CENTER);
+        messageLabel.setMaxWidth(620);  // Increased from 520
+
+        // OK Button - INCREASED WIDTH
+        Button okBtn = new Button("UNDERSTOOD");
+        okBtn.setPrefWidth(280);  // Increased from 200
+        okBtn.setPrefHeight(50);
+        okBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, " + accentColor + ", " + adjustBrightness(accentColor, -0.3) + "); " +
+                        "-fx-text-fill: white; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-padding: 12 40; " +
+                        "-fx-background-radius: 12; " +
+                        "-fx-cursor: hand; " +
+                        "-fx-font-size: 16;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.5), 10, 0.3, 0, 3);"
+        );
+        okBtn.setOnMouseEntered(e -> okBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, " + adjustBrightness(accentColor, 0.3) + ", " + accentColor + "); " +
+                        "-fx-text-fill: white; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-padding: 12 40; " +
+                        "-fx-background-radius: 12; " +
+                        "-fx-cursor: hand; " +
+                        "-fx-font-size: 16;" +
+                        "-fx-effect: dropshadow(gaussian, " + accentColor + ", 15, 0.5, 0, 3);"
+        ));
+        okBtn.setOnMouseExited(e -> okBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, " + accentColor + ", " + adjustBrightness(accentColor, -0.3) + "); " +
+                        "-fx-text-fill: white; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-padding: 12 40; " +
+                        "-fx-background-radius: 12; " +
+                        "-fx-cursor: hand; " +
+                        "-fx-font-size: 16;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.5), 10, 0.3, 0, 3);"
+        ));
+
+        okBtn.setOnAction(e -> modalStage.close());
+
+        // Allow clicking outside to close
+        overlay.setOnMouseClicked(e -> {
+            if (e.getTarget() == overlay) {
+                modalStage.close();
+            }
+        });
+
+        dialogBox.getChildren().addAll(iconLabel, titleLabel, separator, messageLabel, okBtn);
+        overlay.getChildren().add(dialogBox);
+        StackPane.setAlignment(dialogBox, Pos.CENTER);
+
+        // Create scene - INCREASED SIZE to prevent cutoff
+        Scene scene = new Scene(overlay, 800, 600);  // Increased from 700, 550
+        scene.setFill(Color.TRANSPARENT);
+        modalStage.setScene(scene);
+
+        // Center on parent
+        modalStage.setOnShown(ev -> {
+            Stage owner = (Stage) modalStage.getOwner();
+            if (owner != null) {
+                double x = owner.getX() + (owner.getWidth() - modalStage.getWidth()) / 2;
+                double y = owner.getY() + (owner.getHeight() - modalStage.getHeight()) / 2;
+                modalStage.setX(x);
+                modalStage.setY(y);
+            }
+        });
+
+        modalStage.showAndWait();
+    }
+
+    // Helper method to adjust color brightness (keep your existing one)
+    private String adjustBrightness(String hexColor, double factor) {
+        String hex = hexColor.replace("#", "");
+        int r = Integer.parseInt(hex.substring(0, 2), 16);
+        int g = Integer.parseInt(hex.substring(2, 4), 16);
+        int b = Integer.parseInt(hex.substring(4, 6), 16);
+
+        r = Math.max(0, Math.min(255, (int)(r * (1 + factor))));
+        g = Math.max(0, Math.min(255, (int)(g * (1 + factor))));
+        b = Math.max(0, Math.min(255, (int)(b * (1 + factor))));
+
+        return String.format("#%02x%02x%02x", r, g, b);
+    }
+
     // RENAME your current dialog UI to this:
     private void showAppealSubmissionDialogUI(String username) {
-        Stage dialogStage = new Stage();
-        dialogStage.initOwner(primaryStage);
-        dialogStage.setTitle("Submit Ban Appeal");
-        dialogStage.setResizable(false);
+        // Create a new Stage for the modal dialog
+        Stage modalStage = new Stage();
+        modalStage.initOwner(primaryStage);
+        modalStage.initModality(Modality.APPLICATION_MODAL);
+        modalStage.initStyle(StageStyle.TRANSPARENT);
+        modalStage.setTitle("Submit Ban Appeal");
+        modalStage.setResizable(false);
 
-        VBox layout = new VBox(20);
-        layout.setPadding(new Insets(30));
-        layout.setAlignment(Pos.CENTER);
-        layout.setStyle("-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e);");
+        // Create modal overlay
+        StackPane modalOverlay = new StackPane();
+        modalOverlay.setStyle("-fx-background-color: transparent;");
 
-        Label titleLabel = new Label("Submit Ban Appeal");
-        titleLabel.setStyle("-fx-font-size: 24; -fx-font-weight: bold; -fx-text-fill: #ff9900;");
+        // Dialog container
+        VBox dialogBox = new VBox(20);
+        dialogBox.setPadding(new Insets(30));
+        dialogBox.setAlignment(Pos.CENTER);
+        dialogBox.setMaxWidth(600);
+        dialogBox.setMaxHeight(550);
+        dialogBox.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 153, 0, 0.5), 30, 0.5, 0, 0);"
+        );
+
+        // Close button
+        Button closeButton = new Button("✕");
+        closeButton.setStyle(
+                "-fx-background-color: rgba(255, 68, 68, 0.2);" +
+                        "-fx-text-fill: #FF4444;" +
+                        "-fx-font-size: 18;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 8 12;" +
+                        "-fx-border-color: #FF4444;" +
+                        "-fx-border-radius: 20;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        );
+
+        HBox topBar = new HBox(closeButton);
+        topBar.setAlignment(Pos.TOP_RIGHT);
+
+        Label titleLabel = new Label("📝 Submit Ban Appeal");
+        titleLabel.setStyle(
+                "-fx-font-size: 24;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-text-fill: #ff9900;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 153, 0, 0.4), 5, 0.6, 0, 0);"
+        );
 
         Label instructionLabel = new Label("Explain why you believe the ban should be lifted:");
         instructionLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #ffffff;");
         instructionLabel.setWrapText(true);
-        instructionLabel.setMaxWidth(480);
+        instructionLabel.setMaxWidth(500);
 
         TextArea appealArea = new TextArea();
         appealArea.setPromptText("Describe your situation, admit any mistakes, and explain why you deserve a second chance...");
         appealArea.setPrefRowCount(8);
         appealArea.setPrefWidth(500);
         appealArea.setWrapText(true);
-        appealArea.setStyle("-fx-control-inner-background: #ffffff; -fx-background-color: #ffffff; " +
-                "-fx-text-fill: #000000; -fx-prompt-text-fill: #888888; -fx-font-size: 14px; " +
-                "-fx-padding: 10; -fx-background-radius: 8; -fx-border-color: #ff9900; " +
-                "-fx-border-width: 2; -fx-border-radius: 8;");
+        appealArea.setStyle(
+                "-fx-control-inner-background: #ffffff;" +
+                        "-fx-background-color: #ffffff;" +
+                        "-fx-text-fill: #000000;" +
+                        "-fx-prompt-text-fill: #888888;" +
+                        "-fx-font-size: 14px;" +
+                        "-fx-padding: 10;" +
+                        "-fx-background-radius: 8;" +
+                        "-fx-border-color: #ff9900;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-border-radius: 8;"
+        );
 
         Label charCountLabel = new Label("0 / 1000 characters");
-        charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #888888;");
+        charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #00ffff;");
 
+        // Character counter with color changes
         appealArea.textProperty().addListener((obs, oldVal, newVal) -> {
             int length = newVal.length();
             charCountLabel.setText(length + " / 1000 characters");
+
             if (length > 1000) {
-                charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #ff4444;");
                 appealArea.setText(oldVal);
+            } else if (length >= 950) {
+                charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #ff4444; -fx-font-weight: bold;");
+            } else if (length >= 800) {
+                charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #ffaa00;");
             } else {
-                charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #888888;");
+                charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #00ffff;");
             }
         });
 
         HBox buttonBox = new HBox(15);
         buttonBox.setAlignment(Pos.CENTER);
 
-        Button submitBtn = new Button("Submit Appeal");
-        submitBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #ff9900, #cc7700); " +
-                "-fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 10 30; " +
-                "-fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 14;");
+        Button submitBtn = new Button("📤 Submit Appeal");
+        submitBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #ff9900, #cc7700);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 35;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-font-size: 14;"
+        );
+
+        // Hover effects for submit button
+        submitBtn.setOnMouseEntered(e -> submitBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #ffaa11, #dd8800);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 35;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-font-size: 14;"
+        ));
+        submitBtn.setOnMouseExited(e -> submitBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #ff9900, #cc7700);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 35;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-font-size: 14;"
+        ));
 
         Button cancelBtn = new Button("Cancel");
-        cancelBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #666666, #444444); " +
-                "-fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 10 30; " +
-                "-fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 14;");
+        cancelBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #666666, #444444);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 35;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-font-size: 14;"
+        );
+
+        // Hover effects for cancel button
+        cancelBtn.setOnMouseEntered(e -> cancelBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #888888, #666666);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 35;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-font-size: 14;"
+        ));
+        cancelBtn.setOnMouseExited(e -> cancelBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #666666, #444444);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 35;" +
+                        "-fx-background-radius: 10;" +
+                        "-fx-cursor: hand;" +
+                        "-fx-font-size: 14;"
+        ));
+
+        // Close modal handler
+        Runnable closeModal = () -> modalStage.close();
+
+        closeButton.setOnAction(e -> closeModal.run());
+
+        // Hover effects for close button
+        closeButton.setOnMouseEntered(e -> closeButton.setStyle(
+                "-fx-background-color: #FF4444;" +
+                        "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-size: 18;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 8 12;" +
+                        "-fx-border-color: #FF4444;" +
+                        "-fx-border-radius: 20;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
+        closeButton.setOnMouseExited(e -> closeButton.setStyle(
+                "-fx-background-color: rgba(255, 68, 68, 0.2);" +
+                        "-fx-text-fill: #FF4444;" +
+                        "-fx-font-size: 18;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 8 12;" +
+                        "-fx-border-color: #FF4444;" +
+                        "-fx-border-radius: 20;" +
+                        "-fx-border-width: 2;" +
+                        "-fx-cursor: hand;"
+        ));
 
         submitBtn.setOnAction(e -> {
             String appealText = appealArea.getText().trim();
+
             if (appealText.isEmpty()) {
-                Alert alert = new Alert(Alert.AlertType.ERROR, "Please write your appeal before submitting.");
-                alert.showAndWait();
-                return;
-            }
-            if (appealText.length() < 50) {
-                Alert alert = new Alert(Alert.AlertType.ERROR, "Appeal must be at least 50 characters long.");
-                alert.showAndWait();
+                showCustomErrorDialog("Empty Appeal", "Please write your appeal before submitting.");
                 return;
             }
 
-            dialogStage.close();
+            if (appealText.length() < 50) {
+                showCustomErrorDialog("Appeal Too Short", "Appeal must be at least 50 characters long.\n\nCurrent length: " + appealText.length() + " characters");
+                return;
+            }
+
+            closeModal.run();
             submitAppeal(username, appealText);
         });
 
-        cancelBtn.setOnAction(e -> dialogStage.close());
+        cancelBtn.setOnAction(e -> closeModal.run());
+
+        // Allow clicking outside to close
+        modalOverlay.setOnMouseClicked(e -> {
+            if (e.getTarget() == modalOverlay) {
+                closeModal.run();
+            }
+        });
 
         buttonBox.getChildren().addAll(submitBtn, cancelBtn);
-        layout.getChildren().addAll(titleLabel, instructionLabel, appealArea, charCountLabel, buttonBox);
+        dialogBox.getChildren().addAll(topBar, titleLabel, instructionLabel, appealArea, charCountLabel, buttonBox);
 
-        Scene scene = new Scene(layout, 600, 500);
-        dialogStage.setScene(scene);
-        dialogStage.show();
+        modalOverlay.getChildren().add(dialogBox);
+        StackPane.setAlignment(dialogBox, Pos.CENTER);
 
+        // Create scene with transparent background
+        Scene scene = new Scene(modalOverlay, 700, 600);
+        scene.setFill(Color.TRANSPARENT);
+        modalStage.setScene(scene);
+
+        // Center on primary stage
+        modalStage.setOnShown(e -> {
+            double x = primaryStage.getX() + (primaryStage.getWidth() - modalStage.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - modalStage.getHeight()) / 2;
+            modalStage.setX(x);
+            modalStage.setY(y);
+        });
+
+        // Show the modal stage
+        modalStage.show();
+
+        // Focus on text area
         Platform.runLater(() -> appealArea.requestFocus());
     }
 
@@ -6079,6 +7345,13 @@ public class ChromaFloodSystem extends Application {
         });
     }
 
+    private final Map<String, JsonObject> appealsCache = new LinkedHashMap<String, JsonObject>(100, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, JsonObject> eldest) {
+            return size() > 100; // Keep max 100 appeals in cache
+        }
+    };
+
     private void showBanAppealsDialog() {
         // Create new Stage window if it doesn't exist
         if (banAppealsStage == null) {
@@ -6090,7 +7363,14 @@ public class ChromaFloodSystem extends Application {
             banAppealsStage.setResizable(false);
 
             // Reset dialog flag when closed
-            banAppealsStage.setOnHidden(e -> isDialogOpen = false);
+            banAppealsStage.setOnHidden(e -> {
+                isDialogOpen = false;
+                currentAppealPage = 0; // Reset page when closing
+                currentStatusFilter = "All"; // Reset filter when closing
+                currentSearchQuery = ""; // Reset search when closing
+                // Clear memory when dialog closes
+                clearAppealsCache();
+            });
 
             // Outer container with transparent background
             StackPane overlay = new StackPane();
@@ -6102,7 +7382,7 @@ public class ChromaFloodSystem extends Application {
             banAppealsDialog.setAlignment(Pos.CENTER);
             banAppealsDialog.setPadding(new Insets(30));
             banAppealsDialog.setMaxWidth(900);
-            banAppealsDialog.setMaxHeight(650);
+            banAppealsDialog.setMaxHeight(700);
             banAppealsDialog.setStyle(
                     "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e, #0f3460);" +
                             "-fx-background-radius: 20;" +
@@ -6176,6 +7456,186 @@ public class ChromaFloodSystem extends Application {
             VBox titleBox = new VBox(5, titleLabel, subtitleLabel);
             titleBox.setAlignment(Pos.CENTER);
 
+            // ========== FILTER CONTROLS ==========
+            HBox filterBox = new HBox(15);
+            filterBox.setAlignment(Pos.CENTER);
+            filterBox.setPadding(new Insets(10, 0, 10, 0));
+
+            Label filterLabel = new Label("Filter by Status:");
+            filterLabel.setStyle(
+                    "-fx-text-fill: #FFFFFF;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;"
+            );
+
+            statusFilterCombo = new ComboBox<>();
+            statusFilterCombo.getItems().addAll("Active", "All", "Pending", "Approved", "Rejected", "Resolved");
+            statusFilterCombo.setValue("Active");
+            statusFilterCombo.setPrefWidth(150);
+            currentStatusFilter = "Active";
+            statusFilterCombo.setStyle(
+                    "-fx-background-color: rgba(0, 0, 0, 0.5);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-size: 13;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-background-radius: 8;" +
+                            "-fx-border-color: #FFAA00;" +
+                            "-fx-border-radius: 8;" +
+                            "-fx-border-width: 2;"
+            );
+
+            // Search field
+            Label searchLabel = new Label("Search Username:");
+            searchLabel.setStyle(
+                    "-fx-text-fill: #FFFFFF;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;"
+            );
+
+            searchField = new TextField();
+            searchField.setPromptText("Type username...");
+            searchField.setPrefWidth(200);
+// Limit character input to 50
+            searchField.textProperty().addListener((observable, oldValue, newValue) -> {
+                if (newValue != null && newValue.length() > 50) {
+                    searchField.setText(oldValue);
+                }
+            });
+            searchField.setStyle(
+                    "-fx-background-color: rgba(0, 0, 0, 0.5);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-prompt-text-fill: #888888;" +
+                            "-fx-font-size: 13;" +
+                            "-fx-background-radius: 8;" +
+                            "-fx-border-color: #FFAA00;" +
+                            "-fx-border-radius: 8;" +
+                            "-fx-border-width: 2;" +
+                            "-fx-padding: 5 10;"
+            );
+
+            // Clear search button - FIXED SIZE
+            Button clearSearchBtn = new Button("✕");
+            clearSearchBtn.setPrefWidth(30);
+            clearSearchBtn.setMinWidth(30);
+            clearSearchBtn.setMaxWidth(30);
+            clearSearchBtn.setPrefHeight(30);
+            clearSearchBtn.setMinHeight(30);
+            clearSearchBtn.setMaxHeight(30);
+            clearSearchBtn.setStyle(
+                    "-fx-background-color: rgba(255, 68, 68, 0.3);" +
+                            "-fx-text-fill: #ff4444;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-background-radius: 8;" +
+                            "-fx-padding: 0;" +
+                            "-fx-cursor: hand;"
+            );
+            clearSearchBtn.setVisible(false);
+            // REMOVED: clearSearchBtn.setManaged(false); - This was causing the layout issue
+            clearSearchBtn.setOnAction(e -> {
+                searchField.clear();
+                currentSearchQuery = "";
+                currentAppealPage = 0;
+                clearSearchBtn.setVisible(false);
+                loadAppealsPage();
+            });
+
+            // Search with debounce (wait 500ms after typing stops)
+            final long[] lastTypedTime = {0};
+            searchField.textProperty().addListener((obs, oldVal, newVal) -> {
+                lastTypedTime[0] = System.currentTimeMillis();
+
+                if (newVal.trim().isEmpty()) {
+                    clearSearchBtn.setVisible(false);
+                    if (!currentSearchQuery.isEmpty()) {
+                        currentSearchQuery = "";
+                        currentAppealPage = 0;
+                        loadAppealsPage();
+                    }
+                } else {
+                    clearSearchBtn.setVisible(true);
+
+                    // Debounce: wait 500ms before searching
+                    new Thread(() -> {
+                        try {
+                            Thread.sleep(500);
+                            if (System.currentTimeMillis() - lastTypedTime[0] >= 500) {
+                                String query = newVal.trim();
+                                if (query.length() >= 2 && !query.equals(currentSearchQuery)) {
+                                    currentSearchQuery = query;
+                                    currentAppealPage = 0;
+                                    Platform.runLater(() -> loadAppealsPage());
+                                }
+                            }
+                        } catch (InterruptedException ex) {
+                            // Ignore
+                        }
+                    }).start();
+                }
+            });
+
+            // Refresh button
+            Button refreshBtn = new Button("🔄 Refresh");
+            refreshBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #4444ff, #2222cc);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 8 20;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-font-size: 13;"
+            );
+            refreshBtn.setOnMouseEntered(e -> refreshBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #6666ff, #4444ee);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 8 20;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-font-size: 13;"
+            ));
+            refreshBtn.setOnMouseExited(e -> refreshBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #4444ff, #2222cc);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 8 20;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-font-size: 13;"
+            ));
+            refreshBtn.setOnAction(e -> {
+                currentAppealPage = 0; // Reset to first page
+                loadAppealsPage();
+            });
+
+            // Status count label
+            Label statusCountLabel = new Label("");
+            statusCountLabel.setStyle(
+                    "-fx-text-fill: #00ffcc;" +
+                            "-fx-font-size: 13;" +
+                            "-fx-font-weight: bold;"
+            );
+
+            // Filter change listener
+            statusFilterCombo.setOnAction(e -> {
+                currentStatusFilter = statusFilterCombo.getValue();
+                currentAppealPage = 0; // Reset to first page when filter changes
+                loadAppealsPage();
+            });
+
+            // Create two rows for filters
+            HBox firstRow = new HBox(15);
+            firstRow.setAlignment(Pos.CENTER);
+            firstRow.getChildren().addAll(filterLabel, statusFilterCombo, searchLabel, searchField, clearSearchBtn);
+
+            HBox secondRow = new HBox(15);
+            secondRow.setAlignment(Pos.CENTER);
+            secondRow.getChildren().addAll(refreshBtn);
+
+            VBox filterContainer = new VBox(10);
+            filterContainer.setAlignment(Pos.CENTER);
+            filterContainer.getChildren().addAll(firstRow, secondRow);
+
             // Create the ban appeals table
             banAppealsTable = new TableView<>();
             Label placeholderLabel = new Label("Loading appeals...");
@@ -6198,11 +7658,16 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || item == null) {
                         setText(null);
+                        setGraphic(null);
                         setStyle("");
                     } else {
-                        setText(item);
-                        setStyle("-fx-text-fill: #00ffcc; -fx-font-weight: bold; -fx-font-size: 14px; -fx-alignment: CENTER-LEFT;");
+                        Label label = new Label(item);
+                        label.setStyle("-fx-text-fill: #00ffcc; -fx-font-weight: bold; -fx-font-size: 14px;");
+                        setGraphic(label);
+                        setText(null);
+                        setStyle("-fx-alignment: CENTER-LEFT;");
                     }
+                    setPadding(new Insets(10, 10, 10, 10));
                 }
             });
 
@@ -6218,13 +7683,20 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || item == null) {
                         setText(null);
+                        setGraphic(null);
                         setStyle("");
                     } else {
-                        setText(item);
                         String color = item.equals("PENDING") ? "#ffaa00" :
-                                item.equals("APPROVED") ? "#44ff44" : "#ff4444";
-                        setStyle("-fx-text-fill: " + color + "; -fx-font-weight: bold; -fx-font-size: 13px; -fx-alignment: CENTER;");
+                                item.equals("APPROVED") ? "#44ff44" :
+                                        item.equals("RESOLVED") ? "#00ccff" :  // Cyan for resolved
+                                                "#ff4444";  // Red for rejected
+                        Label label = new Label(item);
+                        label.setStyle("-fx-text-fill: " + color + "; -fx-font-weight: bold; -fx-font-size: 13px;");
+                        setGraphic(label);
+                        setText(null);
+                        setStyle("-fx-alignment: CENTER;");
                     }
+                    setPadding(new Insets(10, 10, 10, 10));
                 }
             });
 
@@ -6242,11 +7714,16 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || item == null) {
                         setText(null);
+                        setGraphic(null);
                         setStyle("");
                     } else {
-                        setText(item);
-                        setStyle("-fx-text-fill: #ffffff; -fx-font-size: 14px; -fx-alignment: CENTER;");
+                        Label label = new Label(item);
+                        label.setStyle("-fx-text-fill: #ffffff; -fx-font-size: 14px;");
+                        setGraphic(label);
+                        setText(null);
+                        setStyle("-fx-alignment: CENTER;");
                     }
+                    setPadding(new Insets(10, 10, 10, 10));
                 }
             });
 
@@ -6260,6 +7737,7 @@ public class ChromaFloodSystem extends Application {
                 private final Button viewBtn = new Button("View");
                 private final Button approveBtn = new Button("Approve");
                 private final Button rejectBtn = new Button("Reject");
+                private final HBox buttonBox = new HBox(8);
 
                 {
                     viewBtn.setPrefWidth(80);
@@ -6286,6 +7764,11 @@ public class ChromaFloodSystem extends Application {
 
                     rejectBtn.setOnMouseEntered(e -> rejectBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #ff6666, #ee4444); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 12; -fx-background-radius: 8; -fx-cursor: hand; -fx-font-size: 11;"));
                     rejectBtn.setOnMouseExited(e -> rejectBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #ff4444, #cc2222); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 12; -fx-background-radius: 8; -fx-cursor: hand; -fx-font-size: 11;"));
+
+                    // Setup button box
+                    buttonBox.setAlignment(Pos.CENTER);
+                    buttonBox.setPadding(new Insets(5, 10, 5, 10));
+                    buttonBox.getChildren().addAll(viewBtn, approveBtn, rejectBtn);
                 }
 
                 @Override
@@ -6293,6 +7776,7 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || getIndex() < 0) {
                         setGraphic(null);
+                        setStyle("");
                         return;
                     }
 
@@ -6304,30 +7788,118 @@ public class ChromaFloodSystem extends Application {
                     approveBtn.setOnAction(e -> updateAppealStatus(username, "approved", banAppealsTable));
                     rejectBtn.setOnAction(e -> updateAppealStatus(username, "rejected", banAppealsTable));
 
-                    HBox box = new HBox(8, viewBtn, approveBtn, rejectBtn);
-                    box.setAlignment(Pos.CENTER);
-                    setGraphic(box);
+                    setGraphic(buttonBox);
+                    setStyle("-fx-alignment: CENTER; -fx-padding: 5 10 5 10;");
                 }
             });
 
             banAppealsTable.getColumns().addAll(colUser, colStatus, colDate, colActions);
 
+            // ========== PAGINATION CONTROLS ==========
+            HBox paginationBox = new HBox(15);
+            paginationBox.setAlignment(Pos.CENTER);
+            paginationBox.setPadding(new Insets(10, 0, 0, 0));
+
+            prevPageBtn = new Button("◀ Previous");
+            prevPageBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #666666, #444444);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 8 20;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-font-size: 13;"
+            );
+            prevPageBtn.setDisable(true);
+            prevPageBtn.setOnAction(e -> {
+                if (currentAppealPage > 0) {
+                    currentAppealPage--;
+                    loadAppealsPage();
+                }
+            });
+
+            pageInfoLabel = new Label("Page 1 of 1");
+            pageInfoLabel.setStyle(
+                    "-fx-text-fill: #FFFFFF;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-min-width: 120;" +
+                            "-fx-alignment: center;"
+            );
+
+            nextPageBtn = new Button("Next ▶");
+            nextPageBtn.setStyle(
+                    "-fx-background-color: linear-gradient(to bottom, #FFAA00, #FF8800);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 8 20;" +
+                            "-fx-background-radius: 10;" +
+                            "-fx-cursor: hand;" +
+                            "-fx-font-size: 13;"
+            );
+            nextPageBtn.setDisable(true);
+            nextPageBtn.setOnAction(e -> {
+                int totalPages = (int) Math.ceil((double) totalAppealsCount / APPEALS_PER_PAGE);
+                if (currentAppealPage < totalPages - 1) {
+                    currentAppealPage++;
+                    loadAppealsPage();
+                }
+            });
+
+            // Hover effects for pagination buttons
+            prevPageBtn.setOnMouseEntered(e -> {
+                if (!prevPageBtn.isDisabled()) {
+                    prevPageBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #888888, #666666); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 13;");
+                }
+            });
+            prevPageBtn.setOnMouseExited(e -> {
+                if (!prevPageBtn.isDisabled()) {
+                    prevPageBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #666666, #444444); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 13;");
+                }
+            });
+
+            nextPageBtn.setOnMouseEntered(e -> {
+                if (!nextPageBtn.isDisabled()) {
+                    nextPageBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #FFCC22, #FFAA00); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 13;");
+                }
+            });
+            nextPageBtn.setOnMouseExited(e -> {
+                if (!nextPageBtn.isDisabled()) {
+                    nextPageBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #FFAA00, #FF8800); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 13;");
+                }
+            });
+
+            paginationBox.getChildren().addAll(prevPageBtn, pageInfoLabel, nextPageBtn);
+
+            // Appeals count info
+            Label appealsCountLabel = new Label("Loading...");
+            appealsCountLabel.setStyle(
+                    "-fx-text-fill: #00ffcc;" +
+                            "-fx-font-size: 13;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-padding: 5 0 0 0;"
+            );
+            appealsCountLabel.setId("appealsCountLabel"); // Add ID for easy reference
+
+            // Store reference for updates
+            final Label countLabelRef = appealsCountLabel;
+
             // Assemble the dialog
-            banAppealsDialog.getChildren().addAll(topBar, titleBox, banAppealsTable);
+            banAppealsDialog.getChildren().addAll(topBar, titleBox, filterContainer, banAppealsTable, paginationBox, appealsCountLabel);
             overlay.getChildren().add(banAppealsDialog);
             StackPane.setAlignment(banAppealsDialog, Pos.CENTER);
 
             // Create scene with transparent background
-            Scene scene = new Scene(overlay, 950, 700);
+            Scene scene = new Scene(overlay, 950, 750);
             scene.setFill(Color.TRANSPARENT);
 
             // Add CSS stylesheet for table styling
             scene.getStylesheets().add("data:text/css," +
                     ".table-view { -fx-background-color: transparent; -fx-background-radius: 0; }" +
                     ".table-view .column-header-background { -fx-background-color: linear-gradient(to right, rgba(255, 170, 0, 0.15), rgba(255, 140, 0, 0.15)); }" +
-                    ".table-view .column-header { -fx-background-color: transparent; -fx-text-fill: #FFAA00; -fx-font-weight: bold; -fx-font-size: 13px; -fx-effect: dropshadow(gaussian, rgba(255, 170, 0, 0.5), 5, 0.5, 0, 0); }" +
-                    ".table-view .table-cell { -fx-border-color: transparent; -fx-background-color: transparent; -fx-padding: 15 10 10 10; }" +
-                    ".table-view .table-row-cell { -fx-background-color: transparent; -fx-border-color: rgba(255, 255, 255, 0.1); -fx-border-width: 0 0 1 0; }" +
+                    ".table-view .column-header { -fx-background-color: transparent; -fx-text-fill: #FFAA00; -fx-font-weight: bold; -fx-font-size: 13px; -fx-effect: dropshadow(gaussian, rgba(255, 170, 0, 0.5), 5, 0.5, 0, 0); -fx-alignment: CENTER; }" +
+                    ".table-view .table-cell { -fx-border-color: transparent; -fx-background-color: transparent; }" +
+                    ".table-view .table-row-cell { -fx-background-color: transparent; -fx-border-color: rgba(255, 255, 255, 0.1); -fx-border-width: 0 0 1 0; -fx-cell-size: 50; }" +
                     ".table-view .table-row-cell:odd { -fx-background-color: rgba(0, 0, 0, 0.1); }" +
                     ".table-view .table-row-cell:selected { -fx-background-color: rgba(60, 60, 60, 0.3); }" +
                     ".table-view:focused .table-row-cell:selected { -fx-background-color: rgba(60, 60, 60, 0.5); }"
@@ -6344,20 +7916,84 @@ public class ChromaFloodSystem extends Application {
             });
 
         } else {
-            // Reset the table state before re-showing
-            banAppealsTable.setPlaceholder(new Label("Loading appeals..."));
+            Label loadingLabel = new Label("Loading appeals...");
+            loadingLabel.setStyle("-fx-text-fill: white;");
+            banAppealsTable.setPlaceholder(loadingLabel);
             banAppealsTable.setItems(FXCollections.observableArrayList());
+            currentAppealPage = 0;
+            currentStatusFilter = "Active";
+            currentSearchQuery = "";
+            if (statusFilterCombo != null) {
+                statusFilterCombo.getItems().clear();
+                statusFilterCombo.getItems().addAll("Active", "All", "Pending", "Approved", "Rejected", "Resolved");
+                statusFilterCombo.setValue("Active");
+            }
+            if (searchField != null) {
+                searchField.clear();
+            }
         }
 
         // Show the stage window
         banAppealsStage.show();
         banAppealsStage.requestFocus();
 
-        // Load appeals data
+        // Load first page of appeals
+        loadAppealsPage();
+    }
+
+    // NEW METHOD: Load appeals with pagination
+    private void loadAppealsPage() {
         executor.submit(() -> {
             try {
+                // Build filter parameter based on selected status
+                String statusFilter = "";
+                if (currentStatusFilter.equals("Active")) {
+                    // Show only pending, approved, and rejected (hide resolved)
+                    statusFilter = "&appeal_status=in.(pending,approved,rejected)";
+                } else if (!currentStatusFilter.equals("All")) {
+                    statusFilter = "&appeal_status=eq." + currentStatusFilter.toLowerCase();
+                }
+
+                // Build search parameter
+                String searchFilter = "";
+                if (!currentSearchQuery.isEmpty()) {
+                    // Use ilike for case-insensitive partial match
+                    searchFilter = "&username=ilike.*" + currentSearchQuery + "*";
+                }
+
+                // First, get total count with filters
+                String countUrl = SUPABASE_URL + "/rest/v1/profiles?appeal_submitted=eq.true" +
+                        statusFilter + searchFilter + "&select=count";
+
+                HttpRequest countRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(countUrl))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .header("Prefer", "count=exact")
+                        .GET()
+                        .build();
+
+                HttpResponse<String> countResponse = httpClient.send(countRequest, HttpResponse.BodyHandlers.ofString());
+
+                // Parse count from Content-Range header
+                String contentRange = countResponse.headers().firstValue("Content-Range").orElse("0-0/0");
+                totalAppealsCount = Integer.parseInt(contentRange.split("/")[1]);
+
+                // Calculate offset for pagination
+                int offset = currentAppealPage * APPEALS_PER_PAGE;
+
+                // Load paginated data with filters
+                String url = SUPABASE_URL + "/rest/v1/profiles" +
+                        "?appeal_submitted=eq.true" +
+                        statusFilter +
+                        searchFilter +
+                        "&select=username,appeal_text,appeal_status,appeal_date" +
+                        "&order=appeal_date.desc" +
+                        "&limit=" + APPEALS_PER_PAGE +
+                        "&offset=" + offset;
+
                 HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(SUPABASE_URL + "/rest/v1/profiles?appeal_submitted=eq.true&select=username,appeal_text,appeal_status,appeal_date&order=appeal_date.desc"))
+                        .uri(URI.create(url))
                         .header("apikey", SUPABASE_ANON_KEY)
                         .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
                         .GET()
@@ -6369,7 +8005,14 @@ public class ChromaFloodSystem extends Application {
                     JsonArray array = gson.fromJson(response.body(), JsonArray.class);
                     List<JsonObject> appealsList = new ArrayList<>();
 
-                    array.forEach(el -> appealsList.add(el.getAsJsonObject()));
+                    array.forEach(el -> {
+                        JsonObject appeal = el.getAsJsonObject();
+                        String username = appeal.get("username").getAsString();
+
+                        // Cache the appeal for faster access
+                        appealsCache.put(username, appeal);
+                        appealsList.add(appeal);
+                    });
 
                     // Sort: Pending first, then by date (newest first)
                     appealsList.sort((a, b) -> {
@@ -6386,22 +8029,102 @@ public class ChromaFloodSystem extends Application {
                         return dateB.compareTo(dateA);
                     });
 
-                    allAppealsData.clear();
-                    allAppealsData.addAll(appealsList);
+                    // Calculate display range
+                    int startItem = (currentAppealPage * APPEALS_PER_PAGE) + 1;
+                    int endItem = Math.min(startItem + appealsList.size() - 1, totalAppealsCount);
+
+                    // Build count message
+                    String filterInfo = "";
+                    if (!currentStatusFilter.equals("All") && !currentSearchQuery.isEmpty()) {
+                        filterInfo = " (" + currentStatusFilter + " - \"" + currentSearchQuery + "\")";
+                    } else if (!currentStatusFilter.equals("All")) {
+                        filterInfo = " (" + currentStatusFilter + ")";
+                    } else if (!currentSearchQuery.isEmpty()) {
+                        filterInfo = " (Search: \"" + currentSearchQuery + "\")";
+                    }
+
+                    String countMessage = totalAppealsCount == 0 ? "No appeals found" + filterInfo :
+                            "Showing " + startItem + "-" + endItem + " of " + totalAppealsCount + " appeals" + filterInfo;
 
                     Platform.runLater(() -> {
-                        banAppealsTable.setItems(FXCollections.observableArrayList(allAppealsData));
-                        banAppealsTable.setPlaceholder(allAppealsData.isEmpty() ? new Label("No appeals submitted") : new Label("No appeals found"));
+                        banAppealsTable.setItems(FXCollections.observableArrayList(appealsList));
+
+                        // Update placeholder text based on filters
+                        String placeholderText = "No appeals found";
+                        if (!currentSearchQuery.isEmpty()) {
+                            placeholderText = "No appeals found for \"" + currentSearchQuery + "\"";
+                        } else if (!currentStatusFilter.equals("All")) {
+                            placeholderText = "No " + currentStatusFilter.toLowerCase() + " appeals found";
+                        }
+
+                        // UPDATED: Set white text color for placeholder
+                        Label placeholderLabel = new Label(placeholderText);
+                        placeholderLabel.setStyle("-fx-text-fill: white;");
+                        banAppealsTable.setPlaceholder(placeholderLabel);
                         banAppealsTable.scrollTo(0);
                         banAppealsTable.refresh();
+
+                        // Update count label using ID lookup
+                        VBox parent = (VBox) banAppealsTable.getParent();
+                        if (parent != null) {
+                            parent.getChildren().stream()
+                                    .filter(node -> "appealsCountLabel".equals(node.getId()))
+                                    .findFirst()
+                                    .ifPresent(node -> ((Label) node).setText(countMessage));
+                        }
+
+                        // Update pagination controls
+                        updatePaginationControls();
                     });
                 } else {
-                    Platform.runLater(() -> banAppealsTable.setPlaceholder(new Label("Failed to load appeals")));
+                    // UPDATED: Set white text color for error message
+                    Platform.runLater(() -> {
+                        Label failedLabel = new Label("Failed to load appeals");
+                        failedLabel.setStyle("-fx-text-fill: white;");
+                        banAppealsTable.setPlaceholder(failedLabel);
+                    });
                 }
             } catch (Exception e) {
-                Platform.runLater(() -> banAppealsTable.setPlaceholder(new Label("Connection error")));
+                // UPDATED: Set white text color for connection error
+                Platform.runLater(() -> {
+                    Label errorLabel = new Label("Connection error");
+                    errorLabel.setStyle("-fx-text-fill: white;");
+                    banAppealsTable.setPlaceholder(errorLabel);
+                });
             }
         });
+    }
+
+    // NEW METHOD: Update pagination button states
+    private void updatePaginationControls() {
+        int totalPages = (int) Math.ceil((double) totalAppealsCount / APPEALS_PER_PAGE);
+        if (totalPages == 0) totalPages = 1;
+
+        // Update page label
+        pageInfoLabel.setText("Page " + (currentAppealPage + 1) + " of " + totalPages);
+
+        // Update button states
+        prevPageBtn.setDisable(currentAppealPage == 0);
+        nextPageBtn.setDisable(currentAppealPage >= totalPages - 1);
+
+        // Update disabled button styles
+        if (prevPageBtn.isDisabled()) {
+            prevPageBtn.setStyle("-fx-background-color: #333333; -fx-text-fill: #666666; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-font-size: 13; -fx-opacity: 0.5;");
+        } else {
+            prevPageBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #666666, #444444); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 13;");
+        }
+
+        if (nextPageBtn.isDisabled()) {
+            nextPageBtn.setStyle("-fx-background-color: #333333; -fx-text-fill: #666666; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-font-size: 13; -fx-opacity: 0.5;");
+        } else {
+            nextPageBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #FFAA00, #FF8800); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 20; -fx-background-radius: 10; -fx-cursor: hand; -fx-font-size: 13;");
+        }
+    }
+
+    // NEW METHOD: Clear appeals cache to free memory
+    private void clearAppealsCache() {
+        appealsCache.clear();
+        System.gc(); // Suggest garbage collection (optional)
     }
 
     // 8. Add method to show appeal details:
@@ -6691,33 +8414,6 @@ public class ChromaFloodSystem extends Application {
         });
     }
 
-    private void transitionToNextDialog(Stage currentStage, Runnable nextDialogAction) {
-        StackPane root = (StackPane) currentStage.getScene().getRoot();
-        StackPane contentStack = (StackPane) root.getChildren().get(1); // The content layer
-
-        // Fade out and scale down animation
-        Timeline exitAnimation = new Timeline(
-                new KeyFrame(Duration.ZERO,
-                        new KeyValue(contentStack.opacityProperty(), 1),
-                        new KeyValue(contentStack.scaleXProperty(), 1.0),
-                        new KeyValue(contentStack.scaleYProperty(), 1.0)),
-                new KeyFrame(Duration.millis(200),
-                        new KeyValue(contentStack.opacityProperty(), 0, Interpolator.EASE_IN),
-                        new KeyValue(contentStack.scaleXProperty(), 0.8, Interpolator.EASE_IN),
-                        new KeyValue(contentStack.scaleYProperty(), 0.8, Interpolator.EASE_IN))
-        );
-
-        exitAnimation.setOnFinished(e -> {
-            currentStage.close();
-            // Small delay before showing next dialog for better visual flow
-            PauseTransition pause = new PauseTransition(Duration.millis(100));
-            pause.setOnFinished(ev -> nextDialogAction.run());
-            pause.play();
-        });
-
-        exitAnimation.play();
-    }
-
     // Helper method for error dialogs
     private void showCustomErrorDialog(String title, String message) {
         Stage dialogStage = new Stage();
@@ -6863,21 +8559,87 @@ public class ChromaFloodSystem extends Application {
             VBox titleBox = new VBox(5, titleLabel, subtitleLabel);
             titleBox.setAlignment(Pos.CENTER);
 
+            // ========== FILTER CONTROLS ==========
+            HBox filterBox = new HBox(15);
+            filterBox.setAlignment(Pos.CENTER);
+            filterBox.setPadding(new Insets(10, 0, 10, 0));
+
+            Label filterLabel = new Label("Filter by Status:");
+            filterLabel.setStyle(
+                    "-fx-text-fill: #FFFFFF;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;"
+            );
+
+            // Filter dropdown
+            ComboBox<String> filterComboBox = new ComboBox<>();
+            filterComboBox.getItems().addAll("All Users", "Active Only", "Banned Only");
+            filterComboBox.setValue("All Users");
+            filterComboBox.setPrefWidth(150);
+            filterComboBox.setStyle(
+                    "-fx-background-color: rgba(0, 0, 0, 0.5);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-size: 13;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-background-radius: 8;" +
+                            "-fx-border-color: #ff3366;" +
+                            "-fx-border-radius: 8;" +
+                            "-fx-border-width: 2;"
+            );
+
+            // Search field label
+            Label searchLabel = new Label("Search Username:");
+            searchLabel.setStyle(
+                    "-fx-text-fill: #FFFFFF;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;"
+            );
+
             // Search field
             TextField searchField = new TextField();
-            searchField.setPromptText("🔍 Search by username...");
+            searchField.setPromptText("Type username...");
+            searchField.setPrefWidth(200);
             searchField.setStyle(
-                    "-fx-background-color: #16213e; " +
-                            "-fx-text-fill: white; " +
-                            "-fx-prompt-text-fill: #888888; " +
-                            "-fx-font-size: 14px; " +
-                            "-fx-padding: 10; " +
-                            "-fx-background-radius: 8; " +
-                            "-fx-border-color: #ff3366; " +
-                            "-fx-border-width: 2; " +
-                            "-fx-border-radius: 8;"
+                    "-fx-background-color: rgba(0, 0, 0, 0.5);" +
+                            "-fx-text-fill: white;" +
+                            "-fx-prompt-text-fill: #888888;" +
+                            "-fx-font-size: 13;" +
+                            "-fx-background-radius: 8;" +
+                            "-fx-border-color: #ff3366;" +
+                            "-fx-border-radius: 8;" +
+                            "-fx-border-width: 2;" +
+                            "-fx-padding: 5 10;"
             );
-            searchField.setMaxWidth(760);
+
+            // Clear search button - FIXED SIZE
+            Button clearSearchBtn = new Button("✕");
+            clearSearchBtn.setPrefWidth(30);
+            clearSearchBtn.setMinWidth(30);
+            clearSearchBtn.setMaxWidth(30);
+            clearSearchBtn.setPrefHeight(30);
+            clearSearchBtn.setMinHeight(30);
+            clearSearchBtn.setMaxHeight(30);
+            clearSearchBtn.setStyle(
+                    "-fx-background-color: rgba(255, 68, 68, 0.3);" +
+                            "-fx-text-fill: #ff4444;" +
+                            "-fx-font-size: 14;" +
+                            "-fx-font-weight: bold;" +
+                            "-fx-background-radius: 8;" +
+                            "-fx-padding: 0;" +
+                            "-fx-cursor: hand;"
+            );
+            clearSearchBtn.setVisible(false);
+            clearSearchBtn.setOnAction(e -> {
+                searchField.clear();
+                clearSearchBtn.setVisible(false);
+            });
+
+            // Show/hide clear button based on search field content
+            searchField.textProperty().addListener((obs, oldVal, newVal) -> {
+                clearSearchBtn.setVisible(newVal != null && !newVal.trim().isEmpty());
+            });
+
+            filterBox.getChildren().addAll(filterLabel, filterComboBox, searchLabel, searchField, clearSearchBtn);
 
             // Create the user management table
             userManagementTable = new TableView<>();
@@ -7017,27 +8779,47 @@ public class ChromaFloodSystem extends Application {
 
             userManagementTable.getColumns().addAll(colUser, colLevel, colBanned, colActions);
 
-            // Search functionality
-            searchField.textProperty().addListener((observable, oldValue, newValue) -> {
+            // Combined search and filter functionality
+            Runnable applyFilters = () -> {
                 ObservableList<JsonObject> filtered = FXCollections.observableArrayList();
-                String searchText = (newValue == null) ? "" : newValue.toLowerCase().trim();
+                String searchText = searchField.getText() == null ? "" : searchField.getText().toLowerCase().trim();
+                String filterStatus = filterComboBox.getValue();
 
                 for (JsonObject user : allUsersData) {
-                    if (searchText.isEmpty()) {
+                    // Apply search filter
+                    String username = user.get("username").getAsString().toLowerCase();
+                    boolean matchesSearch = searchText.isEmpty() || username.contains(searchText);
+
+                    // Apply status filter
+                    boolean isBanned = user.get("banned").getAsBoolean();
+                    boolean matchesStatus = filterStatus.equals("All Users") ||
+                            (filterStatus.equals("Active Only") && !isBanned) ||
+                            (filterStatus.equals("Banned Only") && isBanned);
+
+                    if (matchesSearch && matchesStatus) {
                         filtered.add(user);
-                    } else {
-                        String username = user.get("username").getAsString().toLowerCase();
-                        if (username.contains(searchText)) {
-                            filtered.add(user);
-                        }
                     }
                 }
 
                 userManagementTable.setItems(filtered);
+            };
+
+            // Add listeners
+            searchField.textProperty().addListener((observable, oldValue, newValue) -> applyFilters.run());
+            filterComboBox.valueProperty().addListener((observable, oldValue, newValue) -> applyFilters.run());
+
+            // UPDATE: Reset filters when close button is clicked
+            closeButton.setOnAction(e -> {
+                // Reset dropdown to default
+                filterComboBox.setValue("All Users");
+                // Clear search field
+                searchField.clear();
+                // Close the stage
+                userManagementStage.close();
             });
 
             // Assemble the dialog
-            userManagementDialog.getChildren().addAll(topBar, titleBox, searchField, userManagementTable);
+            userManagementDialog.getChildren().addAll(topBar, titleBox, filterBox, userManagementTable);
             overlay.getChildren().add(userManagementDialog);
             StackPane.setAlignment(userManagementDialog, Pos.CENTER);
 
@@ -7054,7 +8836,11 @@ public class ChromaFloodSystem extends Application {
                     ".table-view .table-row-cell { -fx-background-color: transparent; -fx-border-color: rgba(255, 255, 255, 0.1); -fx-border-width: 0 0 1 0; }" +
                     ".table-view .table-row-cell:odd { -fx-background-color: rgba(0, 0, 0, 0.1); }" +
                     ".table-view .table-row-cell:selected { -fx-background-color: rgba(60, 60, 60, 0.3); }" +
-                    ".table-view:focused .table-row-cell:selected { -fx-background-color: rgba(60, 60, 60, 0.5); }"
+                    ".table-view:focused .table-row-cell:selected { -fx-background-color: rgba(60, 60, 60, 0.5); }" +
+                    ".combo-box-popup .list-view { -fx-background-color: rgba(0, 0, 0, 0.9); -fx-background-radius: 8; -fx-border-color: #ff3366; -fx-border-width: 2; -fx-border-radius: 8; -fx-padding: 5; }" +
+                    ".combo-box-popup .list-view .list-cell { -fx-background-color: transparent; -fx-text-fill: white; -fx-padding: 8 10; }" +
+                    ".combo-box-popup .list-view .list-cell:hover { -fx-background-color: #ff3366; -fx-text-fill: white; }" +
+                    ".combo-box-popup .list-view .list-cell:selected { -fx-background-color: rgba(255, 51, 102, 0.5); -fx-text-fill: white; }"
             );
 
             userManagementStage.setScene(scene);
@@ -7115,15 +8901,21 @@ public class ChromaFloodSystem extends Application {
 
                     Platform.runLater(() -> {
                         userManagementTable.setItems(FXCollections.observableArrayList(allUsersData));
-                        userManagementTable.setPlaceholder(new Label("No users found"));
+                        Label noUsersLabel = new Label("No users found");
+                        noUsersLabel.setStyle("-fx-text-fill: white;");
+                        userManagementTable.setPlaceholder(noUsersLabel);
                         userManagementTable.scrollTo(0);
                         userManagementTable.refresh();
                     });
                 } else {
-                    Platform.runLater(() -> userManagementTable.setPlaceholder(new Label("Failed to load users")));
+                    Label failedLabel = new Label("Failed to load users");
+                    failedLabel.setStyle("-fx-text-fill: white;");
+                    Platform.runLater(() -> userManagementTable.setPlaceholder(failedLabel));
                 }
             } catch (Exception e) {
-                Platform.runLater(() -> userManagementTable.setPlaceholder(new Label("Connection error")));
+                Label errorLabel = new Label("Connection error");
+                errorLabel.setStyle("-fx-text-fill: white;");
+                Platform.runLater(() -> userManagementTable.setPlaceholder(errorLabel));
             }
         });
     }
@@ -7157,24 +8949,41 @@ public class ChromaFloodSystem extends Application {
     }
 
     private void showBanReasonDialog(String username, TableView<JsonObject> table) {
-        Stage banDialog = new Stage();
-        banDialog.initOwner(primaryStage);
-        banDialog.setTitle("Ban User - " + username);
-        banDialog.setResizable(false);
+        // Create modal overlay
+        StackPane modalOverlay = new StackPane();
+        modalOverlay.setStyle("-fx-background-color: rgba(0, 0, 0, 0.7);");
+        modalOverlay.setPrefSize(userManagementStage.getWidth(), userManagementStage.getHeight());
 
-        VBox layout = new VBox(20);
-        layout.setPadding(new Insets(30));
-        layout.setAlignment(Pos.CENTER);
-        layout.setStyle("-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e);");
+        // Dialog container
+        VBox dialogBox = new VBox(20);
+        dialogBox.setPadding(new Insets(30));
+        dialogBox.setAlignment(Pos.CENTER);
+        dialogBox.setMaxWidth(550);
+        dialogBox.setMaxHeight(380);
+        dialogBox.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1a1a2e, #16213e);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 51, 102, 0.5), 30, 0.5, 0, 0);"
+        );
 
-        Label titleLabel = new Label("Ban User: " + username);
-        titleLabel.setStyle("-fx-font-size: 22; -fx-font-weight: bold; -fx-text-fill: #ff3366;");
+        Label titleLabel = new Label("⚠ Ban User: " + username);
+        titleLabel.setStyle(
+                "-fx-font-size: 22; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-text-fill: #ff3366;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(255, 51, 102, 0.4), 5, 0.6, 0, 0);"
+        );
 
-        Label instructionLabel = new Label("Enter reason for ban (will be shown to the user):");
+        Label instructionLabel = new Label("Enter reason for ban (max 100 characters):");
         instructionLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #ffffff;");
+        instructionLabel.setWrapText(true);
+
+        // Character counter label
+        Label charCountLabel = new Label("0/100");
+        charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #00ffff;");
 
         TextArea reasonArea = new TextArea();
-        reasonArea.setPromptText("e.g., Cheating, Inappropriate behavior, Terms of Service violation...");
+        reasonArea.setPromptText("e.g., Cheating, Inappropriate behavior...");
         reasonArea.setPrefRowCount(4);
         reasonArea.setPrefWidth(450);
         reasonArea.setWrapText(true);
@@ -7191,15 +9000,32 @@ public class ChromaFloodSystem extends Application {
                         "-fx-border-radius: 8;"
         );
 
+        // Add character limit listener
+        reasonArea.textProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal.length() > 100) {
+                reasonArea.setText(oldVal);
+            } else {
+                charCountLabel.setText(newVal.length() + "/100");
+                // Change color when approaching limit
+                if (newVal.length() >= 90) {
+                    charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #ff4444; -fx-font-weight: bold;");
+                } else if (newVal.length() >= 70) {
+                    charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #ffaa00;");
+                } else {
+                    charCountLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #00ffff;");
+                }
+            }
+        });
+
         HBox buttonBox = new HBox(15);
         buttonBox.setAlignment(Pos.CENTER);
 
-        Button confirmBtn = new Button("Ban User");
+        Button confirmBtn = new Button("🚫 Ban User");
         confirmBtn.setStyle(
                 "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
                         "-fx-text-fill: white; " +
                         "-fx-font-weight: bold; " +
-                        "-fx-padding: 10 30; " +
+                        "-fx-padding: 12 35; " +
                         "-fx-background-radius: 10; " +
                         "-fx-cursor: hand; " +
                         "-fx-font-size: 14;"
@@ -7208,7 +9034,7 @@ public class ChromaFloodSystem extends Application {
                 "-fx-background-color: linear-gradient(to bottom, #ff6666, #ee2222); " +
                         "-fx-text-fill: white; " +
                         "-fx-font-weight: bold; " +
-                        "-fx-padding: 10 30; " +
+                        "-fx-padding: 12 35; " +
                         "-fx-background-radius: 10; " +
                         "-fx-cursor: hand; " +
                         "-fx-font-size: 14;"
@@ -7217,7 +9043,7 @@ public class ChromaFloodSystem extends Application {
                 "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
                         "-fx-text-fill: white; " +
                         "-fx-font-weight: bold; " +
-                        "-fx-padding: 10 30; " +
+                        "-fx-padding: 12 35; " +
                         "-fx-background-radius: 10; " +
                         "-fx-cursor: hand; " +
                         "-fx-font-size: 14;"
@@ -7228,7 +9054,7 @@ public class ChromaFloodSystem extends Application {
                 "-fx-background-color: linear-gradient(to bottom, #666666, #444444); " +
                         "-fx-text-fill: white; " +
                         "-fx-font-weight: bold; " +
-                        "-fx-padding: 10 30; " +
+                        "-fx-padding: 12 35; " +
                         "-fx-background-radius: 10; " +
                         "-fx-cursor: hand; " +
                         "-fx-font-size: 14;"
@@ -7237,7 +9063,7 @@ public class ChromaFloodSystem extends Application {
                 "-fx-background-color: linear-gradient(to bottom, #888888, #666666); " +
                         "-fx-text-fill: white; " +
                         "-fx-font-weight: bold; " +
-                        "-fx-padding: 10 30; " +
+                        "-fx-padding: 12 35; " +
                         "-fx-background-radius: 10; " +
                         "-fx-cursor: hand; " +
                         "-fx-font-size: 14;"
@@ -7246,11 +9072,28 @@ public class ChromaFloodSystem extends Application {
                 "-fx-background-color: linear-gradient(to bottom, #666666, #444444); " +
                         "-fx-text-fill: white; " +
                         "-fx-font-weight: bold; " +
-                        "-fx-padding: 10 30; " +
+                        "-fx-padding: 12 35; " +
                         "-fx-background-radius: 10; " +
                         "-fx-cursor: hand; " +
                         "-fx-font-size: 14;"
         ));
+
+        // Get the root pane of userManagementStage
+        Scene userMgmtScene = userManagementStage.getScene();
+        javafx.scene.Parent rootParent = userMgmtScene.getRoot();
+
+        // The root should be a StackPane based on showUserManagementDialog structure
+        if (!(rootParent instanceof StackPane)) {
+            System.err.println("Root is not a StackPane, cannot show modal dialog");
+            return;
+        }
+
+        StackPane rootPane = (StackPane) rootParent;
+
+        // Close modal handler
+        Runnable closeModal = () -> rootPane.getChildren().remove(modalOverlay);
+
+        cancelBtn.setOnAction(e -> closeModal.run());
 
         confirmBtn.setOnAction(e -> {
             String reason = reasonArea.getText().trim();
@@ -7258,7 +9101,7 @@ public class ChromaFloodSystem extends Application {
                 reason = "No reason provided";
             }
 
-            banDialog.close();
+            closeModal.run();
 
             // Show confirmation dialog
             boolean confirmed = showCustomConfirmDialog(
@@ -7278,15 +9121,23 @@ public class ChromaFloodSystem extends Application {
             }
         });
 
-        cancelBtn.setOnAction(e -> banDialog.close());
+        // Allow clicking outside to close
+        modalOverlay.setOnMouseClicked(e -> {
+            if (e.getTarget() == modalOverlay) {
+                closeModal.run();
+            }
+        });
 
         buttonBox.getChildren().addAll(confirmBtn, cancelBtn);
-        layout.getChildren().addAll(titleLabel, instructionLabel, reasonArea, buttonBox);
+        dialogBox.getChildren().addAll(titleLabel, instructionLabel, reasonArea, charCountLabel, buttonBox);
 
-        Scene scene = new Scene(layout, 550, 350);
-        banDialog.setScene(scene);
-        banDialog.show();
+        modalOverlay.getChildren().add(dialogBox);
+        StackPane.setAlignment(dialogBox, Pos.CENTER);
 
+        // Add modal to the scene
+        rootPane.getChildren().add(modalOverlay);
+
+        // Focus on text area
         Platform.runLater(() -> reasonArea.requestFocus());
     }
 
@@ -7332,6 +9183,49 @@ public class ChromaFloodSystem extends Application {
                             }
                         });
                         table.refresh();
+
+                        // Invalidate leaderboard cache so banned players are hidden immediately
+                        invalidateLeaderboardCache();
+
+                        // If leaderboard dialog is currently open, refresh it in real-time
+                        if (leaderboardStage != null && leaderboardStage.isShowing()) {
+                            refreshLeaderboardData(() -> {
+                                lastLeaderboardFetch = System.currentTimeMillis();
+                                Platform.runLater(() -> {
+                                    leaderboardData.stream()
+                                            .limit(20)
+                                            .map(p -> p.username)
+                                            .forEach(name -> getProfileImageForUser(name));
+
+                                    leaderboardTable.setItems(FXCollections.observableArrayList(leaderboardData));
+                                    leaderboardTable.setPlaceholder(new Label("No players yet..."));
+                                    leaderboardTable.scrollTo(0);
+                                    leaderboardTable.refresh();
+
+                                    System.out.println("[LEADERBOARD] Refreshed after " +
+                                            (ban ? "banning" : "unbanning") + " user: " + username);
+                                });
+                            });
+                        }
+
+                        // ============ HANDLE APPEALS ON UNBAN (BEST PRACTICE) ============
+                        if (!ban) {
+                            // When unbanning, close any pending/approved appeals as "resolved"
+                            // This follows industry standard: appeal is resolved via admin action
+                            closeAppealsOnUnban(username, () -> {
+                                // Callback: refresh appeals dialog AFTER database update completes
+                                if (banAppealsStage != null && banAppealsStage.isShowing()) {
+                                    Platform.runLater(() -> loadAppealsPage());
+                                }
+                            });
+
+                            // If ban appeals dialog is open, refresh it to show updated status
+                            if (banAppealsStage != null && banAppealsStage.isShowing()) {
+                                Platform.runLater(() -> loadAppealsPage());
+                            }
+                        }
+                        // ==================================================================
+
                     } else {
                         new Alert(Alert.AlertType.ERROR,
                                 "Failed (" + resp.statusCode() + "):\n" + resp.body()).show();
@@ -7340,6 +9234,80 @@ public class ChromaFloodSystem extends Application {
             } catch (Exception ex) {
                 Platform.runLater(() -> new Alert(Alert.AlertType.ERROR,
                         "Error: " + ex.getMessage()).show());
+            }
+        });
+    }
+
+    private void closeAppealsOnUnban(String username, Runnable onComplete) {
+        executor.submit(() -> {
+            try {
+                // Check if user has ANY appeals (pending, approved, OR rejected)
+                // FIXED: Query profiles table, not ban_appeals
+                HttpRequest checkRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(SUPABASE_URL + "/rest/v1/profiles?username=eq." + username +
+                                "&appeal_status=in.(pending,approved,rejected)&select=*"))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .GET()
+                        .build();
+
+                HttpResponse<String> checkResp = httpClient.send(checkRequest, HttpResponse.BodyHandlers.ofString());
+
+                if (checkResp.statusCode() == 200) {
+                    JsonArray appeals = new com.google.gson.Gson().fromJson(checkResp.body(), JsonArray.class);
+
+                    if (appeals.size() > 0) {
+                        // Mark as "resolved" - the proper status for admin-unbanned users
+                        String newStatus = "resolved";
+
+                        JsonObject updatePayload = new JsonObject();
+                        updatePayload.addProperty("appeal_status", newStatus);
+
+                        // FIXED: Update profiles table, not ban_appeals
+                        HttpRequest updateRequest = HttpRequest.newBuilder()
+                                .uri(URI.create(SUPABASE_URL + "/rest/v1/profiles?username=eq." + username +
+                                        "&appeal_status=in.(pending,approved,rejected)"))
+                                .header("apikey", SUPABASE_ANON_KEY)
+                                .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                                .header("Content-Type", "application/json")
+                                .method("PATCH", HttpRequest.BodyPublishers.ofString(updatePayload.toString()))
+                                .build();
+
+                        HttpResponse<String> updateResp = httpClient.send(updateRequest,
+                                HttpResponse.BodyHandlers.ofString());
+
+                        if (updateResp.statusCode() == 204 || updateResp.statusCode() == 200) {
+                            System.out.println("[APPEALS] Marked " + appeals.size() +
+                                    " appeal(s) as RESOLVED for unbanned user: " + username);
+
+                            // Wait a moment for database to propagate, then run callback
+                            Thread.sleep(500);
+                            if (onComplete != null) {
+                                onComplete.run();
+                            }
+                        } else {
+                            System.err.println("[APPEALS] Failed to update appeals: " + updateResp.body());
+                            if (onComplete != null) {
+                                onComplete.run();
+                            }
+                        }
+                    } else {
+                        System.out.println("[APPEALS] No active appeals found for: " + username);
+                        if (onComplete != null) {
+                            onComplete.run();
+                        }
+                    }
+                } else {
+                    if (onComplete != null) {
+                        onComplete.run();
+                    }
+                }
+            } catch (Exception ex) {
+                System.err.println("[APPEALS] Error closing appeals for " + username + ": " + ex.getMessage());
+                // Still run callback even on error
+                if (onComplete != null) {
+                    onComplete.run();
+                }
             }
         });
     }
@@ -7669,6 +9637,15 @@ public class ChromaFloodSystem extends Application {
         scene.setFill(Color.TRANSPARENT);
         dialogStage.initStyle(StageStyle.TRANSPARENT);
         dialogStage.setScene(scene);
+
+        // ADD THIS CENTERING CODE:
+        dialogStage.setOnShown(e -> {
+            double x = primaryStage.getX() + (primaryStage.getWidth() - dialogStage.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - dialogStage.getHeight()) / 2;
+            dialogStage.setX(x);
+            dialogStage.setY(y);
+        });
+
         dialogStage.showAndWait();
 
         return result[0];
@@ -7772,8 +9749,10 @@ public class ChromaFloodSystem extends Application {
         Label messageLabel = new Label(message);
         messageLabel.setStyle("-fx-font-size: 16; -fx-text-fill: #ffffff; -fx-text-alignment: center;");
         messageLabel.setWrapText(true);
-        messageLabel.setMaxWidth(400);
-        messageLabel.setAlignment(Pos.CENTER); // Center the label content
+        messageLabel.setMaxWidth(600);
+        messageLabel.setAlignment(Pos.CENTER);
+        messageLabel.setMinHeight(150);
+        messageLabel.setPrefHeight(Region.USE_COMPUTED_SIZE);
 
         Button okBtn = new Button("OK");
         okBtn.setPrefWidth(150);
@@ -7787,12 +9766,17 @@ public class ChromaFloodSystem extends Application {
 
         contentBox.getChildren().addAll(iconLabel, messageLabel, okBtn);
 
-        Scene scene = new Scene(contentBox, 450, 320); // Increased size to prevent cutoff
+        Scene scene = new Scene(contentBox, 650, 450);
         dialogStage.initStyle(StageStyle.UNDECORATED);
         dialogStage.setScene(scene);
 
-        // Center the dialog on the owner stage
-        dialogStage.centerOnScreen();
+        // ADD THIS: Center the dialog on primary stage (same as confirmation dialog)
+        dialogStage.setOnShown(e -> {
+            double x = primaryStage.getX() + (primaryStage.getWidth() - dialogStage.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - dialogStage.getHeight()) / 2;
+            dialogStage.setX(x);
+            dialogStage.setY(y);
+        });
 
         dialogStage.showAndWait();
     }
@@ -7828,7 +9812,6 @@ public class ChromaFloodSystem extends Application {
             });
         });
     }
-
 
     private void refreshUserList(TableView<JsonObject> table) {
         executor.submit(() -> {
@@ -8014,7 +9997,9 @@ public class ChromaFloodSystem extends Application {
 
             // Create the leaderboard table
             leaderboardTable = new TableView<>();
-            leaderboardTable.setPlaceholder(new Label("Loading players..."));
+            Label loadingLabel = new Label("Loading players...");
+            loadingLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px;");
+            leaderboardTable.setPlaceholder(loadingLabel);
             leaderboardTable.setStyle("-fx-background-color: rgba(58, 58, 58, 0.4); -fx-control-inner-background: transparent;");
             leaderboardTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
             leaderboardTable.setPrefHeight(350);
@@ -8165,7 +10150,9 @@ public class ChromaFloodSystem extends Application {
 
         } else {
             // Reset the table state before re-showing
-            leaderboardTable.setPlaceholder(new Label("Loading players..."));
+            Label loadingLabel = new Label("Loading players...");
+            loadingLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px;");
+            leaderboardTable.setPlaceholder(loadingLabel);
             leaderboardTable.setItems(FXCollections.observableArrayList());
         }
 
@@ -8187,7 +10174,9 @@ public class ChromaFloodSystem extends Application {
                             .forEach(username -> getProfileImageForUser(username));
 
                     leaderboardTable.setItems(FXCollections.observableArrayList(leaderboardData));
-                    leaderboardTable.setPlaceholder(new Label("No players yet..."));
+                    Label noPlayersLabel = new Label("No players yet...");
+                    noPlayersLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px;");
+                    leaderboardTable.setPlaceholder(noPlayersLabel);
                     leaderboardTable.scrollTo(0);
                     leaderboardTable.refresh();
                 });
@@ -8200,7 +10189,9 @@ public class ChromaFloodSystem extends Application {
                         .forEach(username -> getProfileImageForUser(username));
 
                 leaderboardTable.setItems(FXCollections.observableArrayList(leaderboardData));
-                leaderboardTable.setPlaceholder(new Label("No players yet..."));
+                Label noPlayersLabel = new Label("No players yet...");
+                noPlayersLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px;");
+                leaderboardTable.setPlaceholder(noPlayersLabel);
                 leaderboardTable.scrollTo(0);
                 leaderboardTable.refresh();
             });
@@ -8340,8 +10331,18 @@ public class ChromaFloodSystem extends Application {
                     });
                 }
 
-                List<PlayerData> sorted = new ArrayList<>(aggregated.values());
-                sorted.sort((a, b) -> {
+                // **NEW: Filter out banned players**
+                List<PlayerData> filtered = new ArrayList<>();
+                for (PlayerData player : aggregated.values()) {
+                    if (!isUserBanned(player.username)) {
+                        filtered.add(player);
+                    } else {
+                        System.out.println("Filtered banned player from leaderboard: " + player.username);
+                    }
+                }
+
+                // Sort the filtered list
+                filtered.sort((a, b) -> {
                     if (a.highestLevel != b.highestLevel) {
                         return Integer.compare(b.highestLevel, a.highestLevel);
                     }
@@ -8350,12 +10351,12 @@ public class ChromaFloodSystem extends Application {
 
                 Platform.runLater(() -> {
                     leaderboardData.clear();
-                    leaderboardData.addAll(sorted);
-                    System.out.println("Leaderboard refreshed — " + sorted.size() + " unique players");
-                    if (!sorted.isEmpty()) {
-                        System.out.println("Top player: " + sorted.get(0).username +
-                                " → Level " + sorted.get(0).highestLevel +
-                                " in " + String.format("%.3f", sorted.get(0).totalCompletionTime) + "s");
+                    leaderboardData.addAll(filtered);
+                    System.out.println("Leaderboard refreshed — " + filtered.size() + " unique players (banned players hidden)");
+                    if (!filtered.isEmpty()) {
+                        System.out.println("Top player: " + filtered.get(0).username +
+                                " → Level " + filtered.get(0).highestLevel +
+                                " in " + String.format("%.3f", filtered.get(0).totalCompletionTime) + "s");
                     }
 
                     // Trigger callback after data is ready
@@ -8370,6 +10371,36 @@ public class ChromaFloodSystem extends Application {
                 });
             }
         });
+    }
+
+    // Helper method to check if user is banned
+    private boolean isUserBanned(String username) {
+        try {
+            String url = USERS_TABLE + "?username=eq." + username + "&select=banned";
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("apikey", SUPABASE_ANON_KEY)
+                    .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                    .timeout(java.time.Duration.ofSeconds(10))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                Type type = new TypeToken<List<Map<String, Object>>>() {}.getType();
+                List<Map<String, Object>> result = gson.fromJson(response.body(), type);
+
+                if (result != null && !result.isEmpty()) {
+                    Object isBannedObj = result.get(0).get("banned"); // Changed from "is_banned" to "banned"
+                    return isBannedObj != null && (Boolean) isBannedObj;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error checking ban status for " + username + ": " + e.getMessage());
+        }
+
+        return false; // Default to not banned if check fails
     }
 
     private void setupGameplayScreen() {
