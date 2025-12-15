@@ -68,9 +68,7 @@ import javafx.embed.swing.SwingFXUtils;
 import java.awt.image.BufferedImage;
 import java.awt.Graphics2D;
 import javax.imageio.*;
-import javax.imageio.stream.ImageOutputStream;
 import javax.imageio.plugins.jpeg.*;
-import java.util.Iterator;
 import javafx.scene.shape.Line;
 import javafx.scene.text.Text;
 import javafx.stage.Stage;
@@ -170,10 +168,19 @@ enum ColorType {
 }
 
 public class ChromaFloodSystem extends Application {
-    private String currentUserId;
-    private String authToken;
-    private StackPane leaderboardOverlay;
-    private VBox leaderboardDialog;
+    private volatile boolean justHandledGameEnd = false;
+    private Stage connectionLostStage = null;
+    private Timeline reconnectCheckTimer = null;
+    private Label reconnectStatusLabel = null;
+    private Stage tutorialStage;
+    private boolean tutorialActive = false;
+    private boolean skipBackConfirmation = false;
+    private int currentTutorialStep = 0;
+    private Rectangle tutorialOverlay;
+    private boolean tutorialCompleted = false;
+    private VBox tutorialCard;
+    private volatile boolean isModalDialogOpen = false;
+    private int reconnectAttempts = 0;
     public Stage primaryStage;
     public String currentUser = null;
     public boolean isOnLevelSelectScreen = false;
@@ -200,7 +207,7 @@ public class ChromaFloodSystem extends Application {
     private boolean isTransitioningToGameplay = false;
     private Stage audioSettingsStage = null;
     private Stage banAppealsStage = null;
-    private Stage profileSettingsStage = null;
+    public Stage profileSettingsStage = null;
     private TableView<JsonObject> banAppealsTable = null;
     private ObservableList<JsonObject> allAppealsData = FXCollections.observableArrayList();
     private Stage userManagementStage = null;
@@ -209,26 +216,24 @@ public class ChromaFloodSystem extends Application {
     private volatile boolean audioResourcesReady = false;
     private volatile boolean isOnline = true;  // ADD THIS
     private Timeline connectionCheckTimer = null;  // ADD THIS
-    private ImageView topBarProfilePicView;
+    public ImageView topBarProfilePicView;
     private boolean isTransitioning = false;
     private long lastLeaderboardFetch = 0;
     private static final long CACHE_DURATION_MS = 30000;
     private ParallelTransition gridEntranceAnimation;
-    private Label usernameLabel;
-    private boolean isDialogOpen = false;
+    public Label usernameLabel;
+    public boolean isDialogOpen = false;
     private Stage leaderboardStage;  // Add this as a field at the top of your class
-    private GridPane leaderboardGrid;
     private TableView<PlayerData> leaderboardTable;
     private static final String ADMIN_USERNAME = "admin";
-    private String currentProfilePictureDataUrl = null;
     private final Map<String, Image> profilePictureCache = new HashMap<>();
     private Task<Void> leaderboardProfilePreloadTask = null;
     private static final String PROFILE_IMAGE_FOLDER = "resources/images";
     private static final String DEFAULT_PROFILE_PIC_FILE = "default_profile.png";
     private static final String DEFAULT_PROFILE_PIC_URL = "https://drive.google.com/uc?export=download&id=1m1yQ0995BXEa4tBMS_R2p9jY81uc4kAF";
     private static final String LEADERBOARD_API = "https://your-springboot.up.railway.app/api/leaderboard";
-    private static final String SUPABASE_URL = "https://pnyzbscskolmgdiuqmwh.supabase.co";
-    private static final String SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBueXpic2Nza29sbWdkaXVxbXdoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM3MDA0NjksImV4cCI6MjA3OTI3NjQ2OX0.p9Z808Xs4IFgg5vUyv0WEzK22fVSQ6fWd3kNU23bsf0";
+    public static final String SUPABASE_URL = "https://pnyzbscskolmgdiuqmwh.supabase.co";
+    public static final String SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBueXpic2Nza29sbWdkaXVxbXdoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM3MDA0NjksImV4cCI6MjA3OTI3NjQ2OX0.p9Z808Xs4IFgg5vUyv0WEzK22fVSQ6fWd3kNU23bsf0";
     private static final String USERS_TABLE = SUPABASE_URL + "/rest/v1/profiles";
     private static final String APP_VERSION = "1.0.1"; // Semantic versioning
     private static final String VERSION_CHECK_URL = SUPABASE_URL + "/rest/v1/app_config?key=eq.min_required_version";
@@ -239,7 +244,7 @@ public class ChromaFloodSystem extends Application {
     private static final String MAINTENANCE_CHECK_URL = SUPABASE_URL + "/rest/v1/app_config?key=eq.maintenance_mode";
     private static final String MAINTENANCE_MESSAGE_URL = SUPABASE_URL + "/rest/v1/app_config?key=eq.maintenance_message";
     private final BooleanProperty profileLoaded = new SimpleBooleanProperty(false);
-    private ImageView levelSelectProfileView;
+    public ImageView levelSelectProfileView;
     private ImageView settingsProfileView;
     private static final String LEADERBOARD_POST = LEADERBOARD_API_POST;
     private static final String LEADERBOARD_GET = LEADERBOARD_API_GET;
@@ -247,9 +252,9 @@ public class ChromaFloodSystem extends Application {
     private static final String ENCRYPTION_KEY = "ChromaFlood2025!"; // 16 chars = AES-128
     public Image currentProfileImage = null;
     private Timeline profileRealtimeSync;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    public final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Gson gson = new Gson();
-    private final HttpClient httpClient = HttpClient.newHttpClient();
+    public final HttpClient httpClient = HttpClient.newHttpClient();
     private final ObservableList<PlayerData> leaderboardData = FXCollections.observableArrayList();
     private static final int ROWS = 8;
     private static final int COLS = 10;
@@ -267,6 +272,14 @@ public class ChromaFloodSystem extends Application {
     private Timeline floodFillTimeline = null;
     private boolean isCheckingSuccess = false;
     private Set<Integer> unlockedLevels = new HashSet<>();
+    private Image spriteCharacter;
+    private long lastChatTime = 0; // Track last chat interaction time
+    private static final long CHAT_COOLDOWN_MS = 2000;
+    private boolean isSpriteVisible = true;
+    private StackPane spriteContainer = null;
+    private static final String SPRITE_FOLDER = "resources/sprites";
+    private static final String SPRITE_CHARACTER_FILE = "character_sprite.gif";
+    private static final String SPRITE_CHARACTER_URL = "https://drive.google.com/uc?export=download&id=1V4Qnp1pqjrYJurSNVQqZpkZq6J68uCka";
     private BooleanProperty isFullScreen = new SimpleBooleanProperty(false); // Track full-screen state
     public BorderPane root; // Single root for all UI
     private Image level1Image;
@@ -333,8 +346,6 @@ public class ChromaFloodSystem extends Application {
             "https://drive.google.com/uc?export=download&id=122W2qCE3aF6BisP0wosDJ6A04deMfCdH", // Level 9
             "https://drive.google.com/uc?export=download&id=1FZO9pjbCqGzhOXcpfrAMwSrTmJIMOetB"  // Level 10
     };
-    private static final String AUDIO_FILE = "tile_click.mp3";
-    private static final String DOWNLOAD_URL = "https://drive.google.com/uc?export=download&id=1WDcNa7wBN9FBNmiGJPRwnLXH06LWHplU";
     private boolean isEffectsMuted = false; // For click sounds (SFX)
     private boolean isMusicMuted = false; // For background music
     private double audioVolume = 1.0; // Default volume (1.0 is full volume)
@@ -1391,6 +1402,10 @@ public class ChromaFloodSystem extends Application {
         if (connectionCheckTimer != null) {
             connectionCheckTimer.stop();
         }
+        // ADD THIS: Stop reconnect checker
+        if (reconnectCheckTimer != null) {
+            reconnectCheckTimer.stop();
+        }
         if (executor != null && !executor.isShutdown()) {
             executor.shutdown();
         }
@@ -1427,6 +1442,8 @@ public class ChromaFloodSystem extends Application {
         if (profileSettingsStage != null) profileSettingsStage.close();
         if (userManagementStage != null) userManagementStage.close();
         if (leaderboardStage != null) leaderboardStage.close();
+        // ADD THIS: Close connection dialog
+        if (connectionLostStage != null) connectionLostStage.close();
 
         System.out.println("Application cleanup complete");
     }
@@ -1560,16 +1577,48 @@ public class ChromaFloodSystem extends Application {
     }
 
     private void startConnectionMonitoring() {
-        // Check every 10 seconds (non-intrusive)
-        connectionCheckTimer = new Timeline(new KeyFrame(Duration.seconds(10), e -> {
+        // Check every 3 seconds for fast detection (industry standard for active gameplay)
+        connectionCheckTimer = new Timeline(new KeyFrame(Duration.seconds(3), e -> {
             // Run check in background thread to avoid blocking UI
             CompletableFuture.runAsync(this::checkInternetConnection, executor);
         }));
         connectionCheckTimer.setCycleCount(Timeline.INDEFINITE);
         connectionCheckTimer.play();
 
-        // Initial check
+        // Initial immediate check
         CompletableFuture.runAsync(this::checkInternetConnection, executor);
+    }
+
+    public void ensureConnected(Runnable onSuccess) {
+        if (!isOnline) {
+            Platform.runLater(this::handleConnectionLost);
+            return;
+        }
+
+        // Quick check, then proceed
+        CompletableFuture.runAsync(() -> {
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(SUPABASE_URL + "/rest/v1/"))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .timeout(java.time.Duration.ofSeconds(2))
+                        .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                        .build();
+
+                HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+                boolean online = (response.statusCode() >= 200 && response.statusCode() < 500);
+
+                if (online) {
+                    Platform.runLater(onSuccess);
+                } else {
+                    isOnline = false;
+                    Platform.runLater(this::handleConnectionLost);
+                }
+            } catch (Exception e) {
+                isOnline = false;
+                Platform.runLater(this::handleConnectionLost);
+            }
+        }, executor);
     }
 
     private void checkInternetConnection() {
@@ -1594,7 +1643,7 @@ public class ChromaFloodSystem extends Application {
             } else if (!isOnline && nowOnline) {
                 // Just came back online
                 isOnline = true;
-                System.out.println("[CONNECTION] Internet restored");
+                Platform.runLater(this::handleConnectionRestored);
             }
 
         } catch (Exception e) {
@@ -1607,52 +1656,116 @@ public class ChromaFloodSystem extends Application {
     }
 
     private void handleConnectionLost() {
-        System.out.println("[CONNECTION] Internet connection lost - disconnecting user");
+        System.out.println("[CONNECTION] Internet connection lost - showing reconnect dialog");
 
-        // Stop the connection checker during logout
-        if (connectionCheckTimer != null) {
-            connectionCheckTimer.stop();
-        }
+        // Don't stop the main connection checker - keep it running
+        reconnectAttempts = 0;
 
-        // Close all dialogs
-        if (audioSettingsStage != null && audioSettingsStage.isShowing()) {
-            audioSettingsStage.close();
-        }
-        if (profileSettingsStage != null && profileSettingsStage.isShowing()) {
-            profileSettingsStage.close();
-        }
-        if (leaderboardStage != null && leaderboardStage.isShowing()) {
-            leaderboardStage.close();
-        }
-        if (banAppealsStage != null && banAppealsStage.isShowing()) {
-            banAppealsStage.close();
-        }
-        if (userManagementStage != null && userManagementStage.isShowing()) {
-            userManagementStage.close();
-        }
-
-        // Stop all audio
-        stopAllAudio();
-
-        // Clear user session
-        currentUser = null;
-        currentProfileImage = null;
-        clearUserProgressCache();
-
-        // Show disconnection dialog
+        // Show reconnection dialog
         showConnectionLostDialog();
+
+        // Start aggressive reconnect checking (every 3 seconds)
+        startReconnectChecking();
+    }
+
+    private void handleConnectionRestored() {
+        System.out.println("[CONNECTION] Internet connection restored!");
+
+        // Stop reconnect checking
+        if (reconnectCheckTimer != null) {
+            reconnectCheckTimer.stop();
+            reconnectCheckTimer = null;
+        }
+
+        // Close the dialog if it's showing
+        if (connectionLostStage != null && connectionLostStage.isShowing()) {
+            connectionLostStage.close();
+            connectionLostStage = null;
+        }
+
+        reconnectAttempts = 0;
+
+        // Show brief success notification
+        showReconnectSuccessNotification();
+
+        // MODIFIED: Only re-check if user hasn't just handled a game end
+        if (!justHandledGameEnd) {
+            Platform.runLater(() -> {
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                checkSuccess();
+            });
+        }
+    }
+
+    private void startReconnectChecking() {
+        // Check every 3 seconds for faster reconnection
+        reconnectCheckTimer = new Timeline(new KeyFrame(Duration.seconds(3), e -> {
+            CompletableFuture.runAsync(this::attemptReconnect, executor);
+        }));
+        reconnectCheckTimer.setCycleCount(Timeline.INDEFINITE);
+        reconnectCheckTimer.play();
+    }
+
+    private void attemptReconnect() {
+        try {
+            reconnectAttempts++;
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(SUPABASE_URL + "/rest/v1/"))
+                    .header("apikey", SUPABASE_ANON_KEY)
+                    .timeout(java.time.Duration.ofSeconds(3))
+                    .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                    .build();
+
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+
+            boolean nowOnline = (response.statusCode() >= 200 && response.statusCode() < 500);
+
+            Platform.runLater(() -> {
+                if (reconnectStatusLabel != null) {
+                    if (nowOnline) {
+                        reconnectStatusLabel.setText("Connection restored! Reconnecting...");
+                        reconnectStatusLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #00ff00; -fx-text-alignment: center;");
+                    } else {
+                        reconnectStatusLabel.setText("Reconnecting... (Attempt " + reconnectAttempts + ")");
+                        reconnectStatusLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #ffaa00; -fx-text-alignment: center;");
+                    }
+                }
+            });
+
+            if (nowOnline && !isOnline) {
+                isOnline = true;
+                Platform.runLater(this::handleConnectionRestored);
+            }
+
+        } catch (Exception e) {
+            Platform.runLater(() -> {
+                if (reconnectStatusLabel != null) {
+                    reconnectStatusLabel.setText("Reconnecting... (Attempt " + reconnectAttempts + ")");
+                    reconnectStatusLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #ffaa00; -fx-text-alignment: center;");
+                }
+            });
+        }
     }
 
     private void showConnectionLostDialog() {
-        Stage dialogStage = new Stage();
-        dialogStage.initModality(Modality.APPLICATION_MODAL);
-        dialogStage.initOwner(primaryStage);
-        dialogStage.setTitle("Connection Lost");
-        dialogStage.setResizable(false);
+        if (connectionLostStage != null && connectionLostStage.isShowing()) {
+            return; // Already showing
+        }
 
-        VBox contentBox = new VBox(25);
+        connectionLostStage = new Stage();
+        connectionLostStage.initModality(Modality.APPLICATION_MODAL);
+        connectionLostStage.initOwner(primaryStage);
+        connectionLostStage.setTitle("Connection Lost");
+        connectionLostStage.setResizable(false);
+
+        VBox contentBox = new VBox(20);
         contentBox.setAlignment(Pos.CENTER);
-        contentBox.setPadding(new Insets(50));
+        contentBox.setPadding(new Insets(40, 50, 40, 50));
         contentBox.setStyle("-fx-background-color: linear-gradient(to bottom, #1a0a0a, #2a1a1a);");
 
         // Warning icon
@@ -1678,57 +1791,226 @@ public class ChromaFloodSystem extends Application {
 
         Label messageLabel = new Label(
                 "Your internet connection has been lost.\n\n" +
-                        "Chroma Flood requires an active internet connection.\n" +
-                        "Please reconnect and restart the game."
+                        "Waiting for connection to be restored..."
         );
         messageLabel.setStyle("-fx-font-size: 16; -fx-text-fill: #ffffff; -fx-text-alignment: center;");
         messageLabel.setWrapText(true);
-        messageLabel.setMaxWidth(400);
+        messageLabel.setMaxWidth(450);
         messageLabel.setAlignment(Pos.CENTER);
 
-        Button okBtn = new Button("Close Game");
-        okBtn.setPrefWidth(200);
-        okBtn.setPrefHeight(45);
-        okBtn.setStyle(
-                "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
-                        "-fx-text-fill: #ffffff; -fx-font-weight: bold; -fx-font-size: 16; " +
+        // Reconnect status label
+        reconnectStatusLabel = new Label("Reconnecting...");
+        reconnectStatusLabel.setStyle("-fx-font-size: 14; -fx-text-fill: #ffaa00; -fx-text-alignment: center;");
+        reconnectStatusLabel.setWrapText(true);
+        reconnectStatusLabel.setMaxWidth(450);
+        reconnectStatusLabel.setAlignment(Pos.CENTER);
+
+        // Loading spinner
+        ProgressIndicator spinner = new ProgressIndicator();
+        spinner.setStyle("-fx-progress-color: #ff9900;");
+        spinner.setPrefSize(50, 50);
+
+        // Close Game button (optional - for users who want to quit)
+        Button closeBtn = new Button("Close Game");
+        closeBtn.setPrefWidth(200);
+        closeBtn.setPrefHeight(45);
+        closeBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #444444, #222222); " +
+                        "-fx-text-fill: #ffffff; -fx-font-weight: bold; -fx-font-size: 14; " +
                         "-fx-background-radius: 10; -fx-cursor: hand;"
         );
-        okBtn.setOnMouseEntered(e -> okBtn.setStyle(
-                "-fx-background-color: linear-gradient(to bottom, #ff6666, #ee2222); " +
-                        "-fx-text-fill: #ffffff; -fx-font-weight: bold; -fx-font-size: 16; " +
+        closeBtn.setOnMouseEntered(e -> closeBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #666666, #444444); " +
+                        "-fx-text-fill: #ffffff; -fx-font-weight: bold; -fx-font-size: 14; " +
                         "-fx-background-radius: 10; -fx-cursor: hand;"
         ));
-        okBtn.setOnMouseExited(e -> okBtn.setStyle(
-                "-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); " +
-                        "-fx-text-fill: #ffffff; -fx-font-weight: bold; -fx-font-size: 16; " +
+        closeBtn.setOnMouseExited(e -> closeBtn.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #444444, #222222); " +
+                        "-fx-text-fill: #ffffff; -fx-font-weight: bold; -fx-font-size: 14; " +
                         "-fx-background-radius: 10; -fx-cursor: hand;"
         ));
-        okBtn.setOnAction(e -> {
+        closeBtn.setOnAction(e -> {
             pulse.stop();
-            dialogStage.close();
+            if (reconnectCheckTimer != null) {
+                reconnectCheckTimer.stop();
+            }
+            connectionLostStage.close();
             Platform.exit();
             System.exit(0);
         });
 
-        contentBox.getChildren().addAll(iconLabel, titleLabel, messageLabel, okBtn);
+        contentBox.getChildren().addAll(iconLabel, titleLabel, messageLabel, spinner, reconnectStatusLabel, closeBtn);
 
-        Scene scene = new Scene(contentBox, 500, 450);
-        dialogStage.initStyle(StageStyle.UNDECORATED);
-        dialogStage.setScene(scene);
-        dialogStage.centerOnScreen();
+        Scene scene = new Scene(contentBox, 550, 580);
+        connectionLostStage.initStyle(StageStyle.UNDECORATED);
+        connectionLostStage.setScene(scene);
+        connectionLostStage.centerOnScreen();
 
         // Prevent closing with ESC or window controls
-        dialogStage.setOnCloseRequest(event -> event.consume());
+        connectionLostStage.setOnCloseRequest(event -> event.consume());
 
-        dialogStage.showAndWait();
+        connectionLostStage.show();
+    }
+
+    private void showReconnectSuccessNotification() {
+        // Create a StackPane container
+        StackPane notification = new StackPane();
+        notification.setMinWidth(250);
+        notification.setPrefWidth(250);
+        notification.setMinHeight(55);
+        notification.setPrefHeight(55);
+
+        // Create a Rectangle as the solid background
+        Rectangle background = new Rectangle(250, 55);
+        background.setFill(Color.rgb(45, 45, 45));
+        background.setArcWidth(12);  // Rounded corners
+        background.setArcHeight(12);
+
+        // Add drop shadow to the rectangle
+        DropShadow shadow = new DropShadow();
+        shadow.setColor(Color.rgb(0, 0, 0, 0.6));
+        shadow.setRadius(15);
+        shadow.setOffsetY(5);
+        background.setEffect(shadow);
+
+        // Create content HBox
+        HBox contentBox = new HBox(12);
+        contentBox.setAlignment(Pos.CENTER_LEFT);
+        contentBox.setPadding(new Insets(12, 18, 12, 18));
+        contentBox.setMaxWidth(250);
+
+        // Green checkmark icon
+        Label icon = new Label("✓");
+        icon.setStyle("-fx-font-size: 24; -fx-text-fill: #4caf50; -fx-font-weight: bold;");
+        icon.setMinWidth(25);
+
+        // Message text
+        Label message = new Label("Connection Restored");
+        message.setStyle("-fx-font-size: 14; -fx-text-fill: #ffffff; -fx-font-weight: 600;");
+        message.setMinWidth(130);
+        message.setPrefWidth(130);
+        HBox.setHgrow(message, Priority.ALWAYS);
+
+        // Spacer
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        // Close button
+        Button closeBtn = new Button("×");
+        closeBtn.setStyle(
+                "-fx-background-color: transparent; " +
+                        "-fx-text-fill: #999999; " +
+                        "-fx-font-size: 24; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-cursor: hand; " +
+                        "-fx-padding: 0; " +
+                        "-fx-min-width: 25; " +
+                        "-fx-pref-width: 25; " +
+                        "-fx-min-height: 25;"
+        );
+        closeBtn.setOnMouseEntered(e -> closeBtn.setStyle(
+                "-fx-background-color: rgba(255,255,255,0.15); " +
+                        "-fx-background-radius: 12; " +
+                        "-fx-text-fill: #ffffff; " +
+                        "-fx-font-size: 24; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-cursor: hand; " +
+                        "-fx-padding: 0; " +
+                        "-fx-min-width: 25; " +
+                        "-fx-pref-width: 25; " +
+                        "-fx-min-height: 25;"
+        ));
+        closeBtn.setOnMouseExited(e -> closeBtn.setStyle(
+                "-fx-background-color: transparent; " +
+                        "-fx-text-fill: #999999; " +
+                        "-fx-font-size: 24; " +
+                        "-fx-font-weight: bold; " +
+                        "-fx-cursor: hand; " +
+                        "-fx-padding: 0; " +
+                        "-fx-min-width: 25; " +
+                        "-fx-pref-width: 25; " +
+                        "-fx-min-height: 25;"
+        ));
+
+        contentBox.getChildren().addAll(icon, message, spacer, closeBtn);
+
+        // Add background rectangle first, then content on top
+        notification.getChildren().addAll(background, contentBox);
+
+        // Position at bottom-left with more spacing from the left edge
+        notification.setLayoutX(150);  // moves it right
+        notification.setLayoutY(primaryStage.getScene().getHeight() - 100);
+
+        // Add to root pane
+        if (primaryStage.getScene().getRoot() instanceof Pane) {
+            ((Pane) primaryStage.getScene().getRoot()).getChildren().add(notification);
+        }
+
+        // Start below screen
+        notification.setTranslateY(150);
+        notification.setOpacity(0);
+
+        // Slide up animation
+        Timeline slideUp = new Timeline(
+                new KeyFrame(Duration.ZERO,
+                        new KeyValue(notification.translateYProperty(), 150),
+                        new KeyValue(notification.opacityProperty(), 0)
+                ),
+                new KeyFrame(Duration.millis(350),
+                        new KeyValue(notification.translateYProperty(), 0, Interpolator.EASE_OUT),
+                        new KeyValue(notification.opacityProperty(), 1, Interpolator.EASE_OUT)
+                )
+        );
+
+        // Auto-dismiss after 4 seconds
+        Timeline slideDown = new Timeline(
+                new KeyFrame(Duration.ZERO,
+                        new KeyValue(notification.translateYProperty(), 0),
+                        new KeyValue(notification.opacityProperty(), 1)
+                ),
+                new KeyFrame(Duration.millis(350),
+                        new KeyValue(notification.translateYProperty(), 150, Interpolator.EASE_IN),
+                        new KeyValue(notification.opacityProperty(), 0, Interpolator.EASE_IN)
+                )
+        );
+        slideDown.setDelay(Duration.seconds(4));
+
+        slideDown.setOnFinished(e -> {
+            if (primaryStage.getScene().getRoot() instanceof Pane) {
+                ((Pane) primaryStage.getScene().getRoot()).getChildren().remove(notification);
+            }
+        });
+
+        // Close button action
+        closeBtn.setOnAction(e -> {
+            slideDown.stop();
+            Timeline quickClose = new Timeline(
+                    new KeyFrame(Duration.ZERO,
+                            new KeyValue(notification.translateYProperty(), notification.getTranslateY()),
+                            new KeyValue(notification.opacityProperty(), notification.getOpacity())
+                    ),
+                    new KeyFrame(Duration.millis(200),
+                            new KeyValue(notification.translateYProperty(), 150, Interpolator.EASE_IN),
+                            new KeyValue(notification.opacityProperty(), 0, Interpolator.EASE_IN)
+                    )
+            );
+            quickClose.setOnFinished(event -> {
+                if (primaryStage.getScene().getRoot() instanceof Pane) {
+                    ((Pane) primaryStage.getScene().getRoot()).getChildren().remove(notification);
+                }
+            });
+            quickClose.play();
+        });
+
+        slideUp.play();
+        slideDown.play();
     }
 
     private void loadFullProfileFromSupabase(String username, Runnable onComplete) {
         executor.submit(() -> {
             try {
                 String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + URLEncoder.encode(username, StandardCharsets.UTF_8)
-                        + "&select=profile_picture,profile_picture_bytes,unlocked_levels,effects_muted,music_muted,volume";
+                        + "&select=profile_picture,profile_picture_bytes,unlocked_levels,effects_muted,music_muted,volume,sprite_visible";
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(url))
@@ -1783,6 +2065,7 @@ public class ChromaFloodSystem extends Application {
                         isEffectsMuted = data.has("effects_muted") && data.get("effects_muted").getAsBoolean();
                         isMusicMuted = data.has("music_muted") && data.get("music_muted").getAsBoolean();
                         audioVolume = data.has("volume") ? data.get("volume").getAsDouble() : 1.0;
+                        isSpriteVisible = !data.has("sprite_visible") || data.get("sprite_visible").getAsBoolean();
                         updateAudioSettings();
 
                     } else {
@@ -1868,7 +2151,274 @@ public class ChromaFloodSystem extends Application {
         }
     }
 
+    private void loginWithSupabase(String username, String password, Button loginButton, boolean keepLoggedIn) {
+        executor.submit(() -> {
+            try {
+                // Fetch user data INCLUDING skip_back_confirmation
+                String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + username
+                        + "&select=username,password,profile_picture_bytes,unlocked_levels,effects_muted,music_muted,volume,sprite_visible,banned,ban_reason,is_admin,failed_login_attempts,locked_until,appeal_submitted,appeal_status,tutorial_completed,skip_back_confirmation";
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                Platform.runLater(() -> {
+                    loginButton.setDisable(false);
+                    isNavigating = false;
+
+                    if (response.statusCode() == 200) {
+                        String body = response.body();
+                        if (body == null || body.trim().isEmpty() || body.equals("[]")) {
+                            // Username doesn't exist
+                            PauseTransition pause = new PauseTransition(Duration.millis(300));
+                            pause.setOnFinished(e -> {
+                                showLoginScreen(username);
+                                Platform.runLater(() -> {
+                                    new Alert(AlertType.ERROR, "Incorrect username or password.").showAndWait();
+                                });
+                            });
+                            pause.play();
+                            return;
+                        }
+
+                        JsonArray array = gson.fromJson(body, JsonArray.class);
+                        JsonObject userData = array.get(0).getAsJsonObject();
+
+                        // CHECK SERVER-SIDE LOCKOUT FIRST
+                        long lockedUntil = userData.has("locked_until") ? userData.get("locked_until").getAsLong() : 0;
+                        if (System.currentTimeMillis() < lockedUntil) {
+                            long remainingSeconds = (lockedUntil - System.currentTimeMillis()) / 1000;
+                            long minutes = remainingSeconds / 60;
+                            long seconds = remainingSeconds % 60;
+                            String timeMsg = minutes > 0
+                                    ? minutes + " minute(s) and " + seconds + " second(s)"
+                                    : seconds + " second(s)";
+
+                            PauseTransition pause = new PauseTransition(Duration.millis(300));
+                            pause.setOnFinished(e -> {
+                                showLoginScreen(username);
+                                Platform.runLater(() -> {
+                                    Alert alert = new Alert(AlertType.WARNING);
+                                    alert.setTitle("Account Temporarily Locked");
+                                    alert.setHeaderText("Too Many Failed Login Attempts");
+                                    alert.setContentText("This account has been temporarily locked due to multiple failed login attempts.\n\n" +
+                                            "Please wait " + timeMsg + " before trying again.\n\n" +
+                                            "This is a security measure to protect your account.");
+                                    alert.showAndWait();
+                                });
+                            });
+                            pause.play();
+                            return;
+                        }
+
+                        // Check if banned
+                        boolean isBanned = userData.has("banned") && userData.get("banned").getAsBoolean();
+                        if (isBanned) {
+                            String banReason = userData.has("ban_reason") && !userData.get("ban_reason").isJsonNull()
+                                    ? userData.get("ban_reason").getAsString()
+                                    : "No reason provided";
+
+                            boolean hasAppeal = userData.has("appeal_submitted") && userData.get("appeal_submitted").getAsBoolean();
+                            String appealStatus = userData.has("appeal_status") && !userData.get("appeal_status").isJsonNull()
+                                    ? userData.get("appeal_status").getAsString()
+                                    : "none";
+
+                            showBannedDialog(username, banReason, hasAppeal, appealStatus);
+                            return;
+                        }
+
+                        // Verify password
+                        String storedHash = userData.get("password").getAsString();
+                        if (!BCrypt.checkpw(password, storedHash)) {
+                            // WRONG PASSWORD - Update server
+                            incrementFailedAttemptsOnServer(username, userData);
+                            return;
+                        }
+
+                        // SUCCESS - Clear attempts on server
+                        clearFailedAttemptsOnServer(username);
+
+                        currentUser = username;
+                        boolean isAdmin = userData.has("is_admin") && userData.get("is_admin").getAsBoolean();
+
+                        if (!isAdmin) {
+                            String rawBase64 = userData.has("profile_picture_bytes") && !userData.get("profile_picture_bytes").isJsonNull()
+                                    ? userData.get("profile_picture_bytes").getAsString().trim() : null;
+                            currentProfileImage = loadProfileImageSafely(rawBase64);
+
+                            unlockedLevels.clear();
+                            if (userData.has("unlocked_levels") && !userData.get("unlocked_levels").isJsonNull()) {
+                                String levelsStr = userData.get("unlocked_levels").getAsString();
+                                for (String s : levelsStr.split(",")) {
+                                    if (!s.trim().isEmpty()) unlockedLevels.add(Integer.parseInt(s.trim()));
+                                }
+                            }
+
+                            isEffectsMuted = userData.get("effects_muted").getAsBoolean();
+                            isMusicMuted = userData.get("music_muted").getAsBoolean();
+                            audioVolume = userData.has("volume") ? userData.get("volume").getAsDouble() : 1.0;
+                            isSpriteVisible = userData.has("sprite_visible") ? userData.get("sprite_visible").getAsBoolean() : true;
+                            tutorialCompleted = userData.has("tutorial_completed") ? userData.get("tutorial_completed").getAsBoolean() : false;
+                            skipBackConfirmation = userData.has("skip_back_confirmation") ? userData.get("skip_back_confirmation").getAsBoolean() : false; // NEW
+                            updateAudioSettings();
+                        } else {
+                            currentProfileImage = new Image("file:resources/images/admin_profile.png");
+                        }
+
+                        if (keepLoggedIn) saveLoginToken(username);
+                        else deleteLoginToken();
+
+                        if (isAdmin) {
+                            showAdminPanel();
+                        } else {
+                            showLevelSelectScreen();
+                            startMaintenanceMonitoring();
+                        }
+                    } else {
+                        PauseTransition pause = new PauseTransition(Duration.millis(300));
+                        pause.setOnFinished(e -> {
+                            showLoginScreen(username);
+                            Platform.runLater(() -> {
+                                new Alert(AlertType.ERROR, "Server error: " + response.statusCode()).showAndWait();
+                            });
+                        });
+                        pause.play();
+                    }
+                });
+
+            } catch (java.net.ConnectException | java.nio.channels.UnresolvedAddressException e) {
+                System.out.println("[LOGIN] Connection error detected: " + e.getMessage());
+                Platform.runLater(() -> {
+                    loginButton.setDisable(false);
+                    isNavigating = false;
+                    showLoginScreen(username);
+                });
+            } catch (Exception e) {
+                Platform.runLater(() -> {
+                    loginButton.setDisable(false);
+                    isNavigating = false;
+                    PauseTransition pause = new PauseTransition(Duration.millis(300));
+                    pause.setOnFinished(ev -> {
+                        showLoginScreen(username);
+                        Platform.runLater(() -> {
+                            new Alert(AlertType.ERROR, "Connection failed: " + e.getMessage()).showAndWait();
+                        });
+                    });
+                    pause.play();
+                    e.printStackTrace();
+                });
+            }
+        });
+    }
+
+    private void incrementFailedAttemptsOnServer(String username, JsonObject currentUserData) {
+        executor.submit(() -> {
+            try {
+                int currentAttempts = currentUserData.has("failed_login_attempts")
+                        ? currentUserData.get("failed_login_attempts").getAsInt()
+                        : 0;
+
+                int newAttempts = currentAttempts + 1;
+                long lockoutTime = 0;
+
+                if (newAttempts >= 3) {
+                    // Lock out for 15 minutes (900,000 milliseconds)
+                    lockoutTime = System.currentTimeMillis() + (15 * 60 * 1000);
+                    System.out.println("[SECURITY] Username '" + username + "' locked out after " + newAttempts + " failed attempts");
+                }
+
+                // Update the database
+                JsonObject updateData = new JsonObject();
+                updateData.addProperty("failed_login_attempts", newAttempts);
+                updateData.addProperty("locked_until", lockoutTime);
+                updateData.addProperty("last_failed_attempt", System.currentTimeMillis());
+
+                String updateUrl = SUPABASE_URL + "/rest/v1/profiles?username=eq." + username;
+
+                HttpRequest updateRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(updateUrl))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .header("Content-Type", "application/json")
+                        .header("Prefer", "return=minimal")
+                        .method("PATCH", HttpRequest.BodyPublishers.ofString(gson.toJson(updateData)))
+                        .build();
+
+                HttpResponse<String> updateResponse = httpClient.send(updateRequest, HttpResponse.BodyHandlers.ofString());
+
+                if (updateResponse.statusCode() == 204 || updateResponse.statusCode() == 200) {
+                    System.out.println("[SECURITY] Updated failed attempts for '" + username + "': " + newAttempts);
+                }
+
+                // Show error to user
+                Platform.runLater(() -> {
+                    int remaining = 3 - newAttempts;
+                    PauseTransition pause = new PauseTransition(Duration.millis(300));
+                    pause.setOnFinished(e -> {
+                        showLoginScreen(username);
+                        Platform.runLater(() -> {
+                            String message;
+                            if (remaining > 0) {
+                                message = "Incorrect password.\n\nWarning: " + remaining + " attempt(s) remaining before temporary lockout.";
+                            } else {
+                                message = "Account locked due to too many failed attempts.\nPlease wait 15 minutes before trying again.";
+                            }
+                            new Alert(AlertType.ERROR, message).showAndWait();
+                        });
+                    });
+                    pause.play();
+                });
+
+            } catch (Exception e) {
+                System.err.println("[SECURITY] Failed to increment attempts on server: " + e.getMessage());
+                e.printStackTrace();
+            }
+        });
+    }
+
+    /**
+     * Clear failed attempts on the server after successful login
+     */
+    private void clearFailedAttemptsOnServer(String username) {
+        executor.submit(() -> {
+            try {
+                JsonObject updateData = new JsonObject();
+                updateData.addProperty("failed_login_attempts", 0);
+                updateData.addProperty("locked_until", 0);
+
+                String updateUrl = SUPABASE_URL + "/rest/v1/profiles?username=eq." + username;
+
+                HttpRequest updateRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(updateUrl))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .header("Content-Type", "application/json")
+                        .header("Prefer", "return=minimal")
+                        .method("PATCH", HttpRequest.BodyPublishers.ofString(gson.toJson(updateData)))
+                        .build();
+
+                HttpResponse<String> updateResponse = httpClient.send(updateRequest, HttpResponse.BodyHandlers.ofString());
+
+                if (updateResponse.statusCode() == 204 || updateResponse.statusCode() == 200) {
+                    System.out.println("[SECURITY] Cleared failed attempts for '" + username + "'");
+                }
+
+            } catch (Exception e) {
+                System.err.println("[SECURITY] Failed to clear attempts on server: " + e.getMessage());
+            }
+        });
+    }
+
     public void showLoginScreen() {
+        showLoginScreen(null);
+    }
+
+    public void showLoginScreen(String prefillUsername) {
         isNavigating = false;
         isOnLevelSelectScreen = false;
         root.getChildren().clear();
@@ -1996,6 +2546,11 @@ public class ChromaFloodSystem extends Application {
         usernameField.setMaxHeight(40);
         usernameField.setOpacity(0);
         usernameField.setTranslateX(-50);
+
+        // Pre-fill username if provided
+        if (prefillUsername != null && !prefillUsername.isEmpty()) {
+            usernameField.setText(prefillUsername);
+        }
 
         usernameField.textProperty().addListener((observable, oldValue, newValue) -> {
             // Allow only alphanumeric characters and underscores
@@ -2210,7 +2765,7 @@ public class ChromaFloodSystem extends Application {
         });
 
         loginButton.setOnAction(event -> {
-            if (isNavigating) return; // Prevent spam clicking
+            if (isNavigating) return;
 
             String user = usernameField.getText().trim();
             String pass = passwordField.getText().trim();
@@ -2225,8 +2780,6 @@ public class ChromaFloodSystem extends Application {
 
             isNavigating = true;
             loginButton.setDisable(true);
-            // REMOVE: goToRegisterButton.setDisable(true);
-            // The isNavigating flag already prevents clicks on register button
 
             backgroundAnimation.stop();
             showLoadingScreen();
@@ -2408,7 +2961,6 @@ public class ChromaFloodSystem extends Application {
 
         startMaintenanceMonitoring();
     }
-
 
     private static final String IMAGE_FOLDER = "resources/images";
     private static final String[] IMAGE_FILES = {
@@ -3507,7 +4059,7 @@ public class ChromaFloodSystem extends Application {
         }
     }
 
-    private void saveLoginToken(String username) {
+    public void saveLoginToken(String username) {
         try {
             String deviceFingerprint = getDeviceFingerprint();
             if (deviceFingerprint == null) {
@@ -3581,6 +4133,7 @@ public class ChromaFloodSystem extends Application {
     }
 
     private void showLevelSelectScreen() {
+        loadUserPreferencesSync();
         isNavigating = false;
         levelSelectProfileView = new ImageView(currentProfileImage);
         isOnLevelSelectScreen = true;
@@ -3591,6 +4144,10 @@ public class ChromaFloodSystem extends Application {
         primaryStage.setTitle("Chroma Flood - Level Select");
 
         preloadAllLeaderboardProfilePictures();
+
+        if (spriteCharacter == null) {
+            loadSpriteCharacter();
+        }
 
         if (currentUser != null && currentUser.equalsIgnoreCase("admin")) {
             System.out.println("[SECURITY] Blocked level select for admin user");
@@ -3774,6 +4331,128 @@ public class ChromaFloodSystem extends Application {
                 redistributeParticles.run();
             }
         });
+
+        Timeline shootingStarTimer = new Timeline(new KeyFrame(Duration.seconds(6 + random.nextInt(10)), event -> {
+            // Random shooting star event every 6-16 seconds
+            int starCount = 1;
+            double chance = random.nextDouble();
+
+            if (chance < 0.15) {
+                starCount = 3 + random.nextInt(3); // Meteor shower
+            } else if (chance < 0.35) {
+                starCount = 2; // Double stars
+            }
+
+            for (int i = 0; i < starCount; i++) {
+                double starDelay = i * (0.1 + random.nextDouble() * 0.2);
+
+                Timeline spawnStar = new Timeline(new KeyFrame(Duration.seconds(starDelay), e -> {
+                    double currentWidth = root.getWidth() > 0 ? root.getWidth() : primaryStage.getWidth();
+                    double currentHeight = root.getHeight() > 0 ? root.getHeight() : primaryStage.getHeight();
+
+                    // Start from random position at top
+                    double startX = -100 + random.nextDouble() * (currentWidth + 200);
+                    double startY = -50;
+
+                    // Create shooting star as a Pane to hold all elements
+                    Pane shootingStar = new Pane();
+                    shootingStar.setMouseTransparent(true);
+
+                    // Main bright core (small white dot)
+                    Circle core = new Circle(0, 0, 2);
+                    core.setFill(Color.WHITE);
+
+                    // Glowing head (larger, semi-transparent)
+                    Circle glow = new Circle(0, 0, 5);
+                    glow.setFill(Color.rgb(255, 255, 255, 0.6));
+                    glow.setEffect(new Glow(1.0));
+
+                    // Create elongated tail using multiple overlapping circles
+                    List<Circle> tailSegments = new ArrayList<>();
+                    int tailLength = 40 + random.nextInt(30); // 40-70 pixels long
+
+                    for (int j = 0; j < tailLength; j++) {
+                        double progress = (double) j / tailLength;
+                        Circle segment = new Circle(0, 0, 3 * (1 - progress)); // Gets smaller towards end
+
+                        // Color gradient: white -> cyan -> transparent
+                        double opacity = (1 - progress) * 0.8;
+                        if (progress < 0.3) {
+                            segment.setFill(Color.rgb(255, 255, 255, opacity));
+                        } else if (progress < 0.6) {
+                            segment.setFill(Color.rgb(200, 230, 255, opacity));
+                        } else {
+                            segment.setFill(Color.rgb(150, 200, 255, opacity * 0.5));
+                        }
+
+                        segment.setEffect(new Glow(0.4 * (1 - progress)));
+                        tailSegments.add(segment);
+                        shootingStar.getChildren().add(segment);
+                    }
+
+                    shootingStar.getChildren().addAll(glow, core);
+                    shootingStar.setTranslateX(startX);
+                    shootingStar.setTranslateY(startY);
+                    backgroundPane.getChildren().add(shootingStar);
+
+                    // Calculate realistic trajectory (steep diagonal)
+                    double angle = 50 + random.nextDouble() * 25; // 50-75 degrees (mostly downward)
+                    double speed = 400 + random.nextDouble() * 300; // pixels per second
+                    double duration = (1.0 + random.nextDouble() * 0.8); // 1.0-1.8 seconds
+                    double distance = speed * duration;
+
+                    double endX = startX + distance * Math.cos(Math.toRadians(angle));
+                    double endY = startY + distance * Math.sin(Math.toRadians(angle));
+
+                    // Rotate the entire star to match trajectory angle
+                    shootingStar.setRotate(angle);
+
+                    // Animate the star movement
+                    TranslateTransition move = new TranslateTransition(Duration.seconds(duration), shootingStar);
+                    move.setToX(endX);
+                    move.setToY(endY);
+                    move.setInterpolator(Interpolator.LINEAR);
+
+                    // Update tail positions to create streaming effect
+                    Timeline tailAnimation = new Timeline();
+                    tailAnimation.setCycleCount(Animation.INDEFINITE);
+                    tailAnimation.getKeyFrames().add(new KeyFrame(Duration.millis(16), ev -> {
+                        // Position tail segments behind the head
+                        for (int j = 0; j < tailSegments.size(); j++) {
+                            Circle segment = tailSegments.get(j);
+                            double offset = -(j + 3); // Stretch backwards
+                            segment.setTranslateX(offset);
+                        }
+                    }));
+                    tailAnimation.play();
+
+                    // Fade out as it crosses the screen
+                    FadeTransition fade = new FadeTransition(Duration.seconds(duration * 0.4), shootingStar);
+                    fade.setToValue(0);
+                    fade.setDelay(Duration.seconds(duration * 0.6));
+
+                    // Optional: slight brightness pulse at the start (like a flare)
+                    FadeTransition flare = new FadeTransition(Duration.millis(150), core);
+                    flare.setFromValue(1.0);
+                    flare.setToValue(0.7);
+                    flare.setCycleCount(2);
+                    flare.setAutoReverse(true);
+
+                    move.play();
+                    fade.play();
+                    flare.play();
+
+                    // Clean up after animation
+                    move.setOnFinished(finish -> {
+                        tailAnimation.stop();
+                        backgroundPane.getChildren().remove(shootingStar);
+                    });
+                }));
+                spawnStar.play();
+            }
+        }));
+        shootingStarTimer.setCycleCount(Animation.INDEFINITE);
+        shootingStarTimer.play();
 
         Pane levelPane = new Pane();
         double stageWidth = primaryStage.getWidth() > 0 ? primaryStage.getWidth() : 1200;
@@ -4183,11 +4862,25 @@ public class ChromaFloodSystem extends Application {
         topBar.setLeft(userBox);
 
         // RIGHT: The three buttons
-        // RIGHT: The three buttons
         HBox buttonBox = new HBox(15);
         buttonBox.setAlignment(Pos.CENTER_RIGHT);
 
-        Button volumeButton = new Button("🔊");
+        // NEW: How to Play button
+        Button howToPlayButton = new Button("❓");
+        howToPlayButton.setFocusTraversable(false);
+        howToPlayButton.setStyle("-fx-background-color: rgba(0, 0, 0, 0.5); -fx-text-fill: #44AAFF; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #44AAFF; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44AAFF, 8, 0.6, 0, 0); -fx-min-width: 50; -fx-focus-color: transparent; -fx-faint-focus-color: transparent;");
+        howToPlayButton.setOnAction(event -> {
+            if (!isDialogOpen) {
+                isDialogOpen = true;
+                // Show tutorial in "manual mode" - don't affect completion status
+                showTutorial(true); // Pass true to indicate manual opening
+            }
+        });
+        howToPlayButton.setOnMouseEntered(event -> howToPlayButton.setStyle("-fx-background-color: rgba(68, 170, 255, 0.15); -fx-text-fill: #66CCFF; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #66CCFF; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44AAFF, 8, 0.5, 0, 0); -fx-min-width: 50; -fx-focus-color: transparent; -fx-faint-focus-color: transparent;"));
+        howToPlayButton.setOnMouseExited(event -> howToPlayButton.setStyle("-fx-background-color: rgba(0, 0, 0, 0.5); -fx-text-fill: #44AAFF; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #44AAFF; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44AAFF, 8, 0.6, 0, 0); -fx-min-width: 50; -fx-focus-color: transparent; -fx-faint-focus-color: transparent;"));
+
+
+        Button volumeButton = new Button("⚙");
         volumeButton.setFocusTraversable(false);
         volumeButton.setStyle("-fx-background-color: rgba(0, 0, 0, 0.5); -fx-text-fill: #44FF88; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #44FF88; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44FF88, 8, 0.6, 0, 0); -fx-min-width: 50; -fx-focus-color: transparent; -fx-faint-focus-color: transparent;");
         volumeButton.setOnAction(event -> {
@@ -4242,7 +4935,7 @@ public class ChromaFloodSystem extends Application {
             }
         });
 
-        buttonBox.getChildren().addAll(volumeButton, leaderboardButton, logoutButton);
+        buttonBox.getChildren().addAll(howToPlayButton, volumeButton, leaderboardButton, logoutButton);
         topBar.setRight(buttonBox);
 
         // Animate top bar entrance
@@ -4259,9 +4952,170 @@ public class ChromaFloodSystem extends Application {
         topBarEntrance.play();
 
         StackPane rootStack = new StackPane(backgroundPane, new BorderPane(centerWrapper, topBar, null, null, null));
+
+        if (spriteCharacter != null) {
+            ImageView spriteView = new ImageView(spriteCharacter);
+
+            // Size the sprite - adjust these values as needed
+            spriteView.setFitWidth(150);  // Adjust size as needed
+            spriteView.setFitHeight(150); // Adjust size as needed
+            spriteView.setPreserveRatio(true);
+
+            // Add subtle idle animation (gentle bounce)
+            TranslateTransition idleBounce = new TranslateTransition(Duration.seconds(2), spriteView);
+            idleBounce.setByY(-10);
+            idleBounce.setCycleCount(Animation.INDEFINITE);
+            idleBounce.setAutoReverse(true);
+            idleBounce.setInterpolator(Interpolator.EASE_BOTH);
+            idleBounce.play();
+
+            // === CHAT BUBBLE ===
+            VBox chatBubble = new VBox(5);
+            chatBubble.setAlignment(Pos.CENTER);
+            chatBubble.setMaxWidth(200);
+            chatBubble.setMaxHeight(80); // Limit height
+            chatBubble.setPrefHeight(Region.USE_COMPUTED_SIZE); // Auto-size based on content
+            chatBubble.setStyle(
+                    "-fx-background-color: white; " +
+                            "-fx-background-radius: 15; " +
+                            "-fx-padding: 12; " +
+                            "-fx-border-color: #333333; " +
+                            "-fx-border-width: 3; " +
+                            "-fx-border-radius: 15; " +
+                            "-fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.3), 8, 0.0, 2, 2);"
+            );
+
+            Label chatText = new Label("I'm just here looking for bugs to clean! 🐛✨");
+            chatText.setWrapText(true);
+            chatText.setStyle(
+                    "-fx-text-fill: black; " +
+                            "-fx-font-family: 'Arial'; " +
+                            "-fx-font-size: 12; " +
+                            "-fx-font-weight: bold;"
+            );
+            chatBubble.getChildren().add(chatText);
+            chatBubble.setVisible(false); // Hidden by default
+            chatBubble.setOpacity(0);
+            chatBubble.setMouseTransparent(true);
+
+            // Random chat messages
+            String[] chatMessages = {
+                    "I'm just here looking for bugs to clean! 🐛✨",
+                    "Everything seems fine here! ✓",
+                    "No bugs detected... yet! 👀",
+                    "Just doing my routine check! 🔍",
+                    "All systems operational! 💚",
+                    "Keeping things tidy! ✨"
+            };
+
+            // Manually adjust chat bubble position - move it to the right relative to sprite
+            VBox.setMargin(chatBubble, new Insets(0, -25, 0, 0)); // Negative right margin moves it right
+
+            // Make sprite clickable
+            spriteView.setStyle("-fx-cursor: hand;");
+            spriteView.setOnMouseClicked(event -> {
+                // Check cooldown to prevent spam
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastChatTime < CHAT_COOLDOWN_MS) {
+                    // Still in cooldown, ignore click
+                    return;
+                }
+
+                if (chatBubble.isVisible()) {
+                    // Hide chat bubble with animation
+                    lastChatTime = currentTime; // Update cooldown timer
+
+                    FadeTransition fadeOut = new FadeTransition(Duration.millis(300), chatBubble);
+                    fadeOut.setToValue(0);
+                    fadeOut.setOnFinished(e -> chatBubble.setVisible(false));
+
+                    ScaleTransition scaleOut = new ScaleTransition(Duration.millis(300), chatBubble);
+                    scaleOut.setToX(0.8);
+                    scaleOut.setToY(0.8);
+
+                    new ParallelTransition(fadeOut, scaleOut).play();
+                } else {
+                    // Show chat bubble with animation and random message
+                    lastChatTime = currentTime; // Update cooldown timer
+
+                    String randomMessage = chatMessages[random.nextInt(chatMessages.length)];
+                    chatText.setText(randomMessage);
+
+                    chatBubble.setVisible(true);
+                    chatBubble.setScaleX(0.8);
+                    chatBubble.setScaleY(0.8);
+
+                    FadeTransition fadeIn = new FadeTransition(Duration.millis(300), chatBubble);
+                    fadeIn.setToValue(1);
+
+                    ScaleTransition scaleIn = new ScaleTransition(Duration.millis(300), chatBubble);
+                    scaleIn.setToX(1.0);
+                    scaleIn.setToY(1.0);
+                    scaleIn.setInterpolator(Interpolator.EASE_OUT);
+
+                    ParallelTransition showAnim = new ParallelTransition(fadeIn, scaleIn);
+                    showAnim.play();
+
+                    // Auto-hide after 4 seconds
+                    Timeline autoHide = new Timeline(new KeyFrame(Duration.seconds(4), e -> {
+                        if (chatBubble.isVisible()) {
+                            FadeTransition fadeOut = new FadeTransition(Duration.millis(300), chatBubble);
+                            fadeOut.setToValue(0);
+                            fadeOut.setOnFinished(evt -> chatBubble.setVisible(false));
+
+                            ScaleTransition scaleOut = new ScaleTransition(Duration.millis(300), chatBubble);
+                            scaleOut.setToX(0.8);
+                            scaleOut.setToY(0.8);
+
+                            new ParallelTransition(fadeOut, scaleOut).play();
+                        }
+                    }));
+                    autoHide.play();
+                }
+            });
+
+            // Hover effect on sprite
+            spriteView.setOnMouseEntered(e -> {
+                ScaleTransition scaleUp = new ScaleTransition(Duration.millis(200), spriteView);
+                scaleUp.setToX(1.1);
+                scaleUp.setToY(1.1);
+                scaleUp.play();
+            });
+
+            spriteView.setOnMouseExited(e -> {
+                ScaleTransition scaleDown = new ScaleTransition(Duration.millis(200), spriteView);
+                scaleDown.setToX(1.0);
+                scaleDown.setToY(1.0);
+                scaleDown.play();
+            });
+
+            // Position in bottom right corner
+            VBox spriteWithChat = new VBox(10);
+            spriteWithChat.setAlignment(Pos.BOTTOM_RIGHT);
+            spriteWithChat.getChildren().addAll(chatBubble, spriteView);
+            spriteWithChat.setPickOnBounds(false);
+
+// Manually adjust chat bubble position
+            VBox.setMargin(chatBubble, new Insets(0, -25, 0, 0));
+
+// Position in bottom right corner
+            this.spriteContainer = new StackPane(spriteWithChat);
+            spriteContainer.setAlignment(Pos.BOTTOM_RIGHT);
+            spriteContainer.setPadding(new Insets(0, 60, 20, 0));
+            spriteContainer.setPickOnBounds(false);
+
+// Apply saved visibility state
+            spriteContainer.setVisible(isSpriteVisible);
+            spriteContainer.setOpacity(isSpriteVisible ? 1.0 : 0.0);
+
+// Add to rootStack as an overlay
+            rootStack.getChildren().add(spriteContainer);
+            StackPane.setAlignment(spriteContainer, Pos.BOTTOM_RIGHT);
+        }
+
         root.setCenter(rootStack);
 
-// === MOUSE CURSOR PARTICLE TRAIL ===
+        // === MOUSE CURSOR PARTICLE TRAIL ===
         List<Circle> trailParticles = new ArrayList<>();
         final long[] lastTrailTime = {0};
 
@@ -4313,6 +5167,43 @@ public class ChromaFloodSystem extends Application {
 // Ensure profile pic is loaded if just registered/logged in
         if (currentProfileImage == null && currentUser != null) {
             System.err.println("[WARNING] Profile image not loaded during level select!");
+        }
+    }
+
+    private void loadSpriteCharacter() {
+        File spriteFolder = new File(SPRITE_FOLDER);
+        if (!spriteFolder.exists()) {
+            spriteFolder.mkdirs();
+        }
+
+        File spriteFile = new File(SPRITE_FOLDER + File.separator + SPRITE_CHARACTER_FILE);
+
+        // Check if file exists and is valid
+        if (!spriteFile.exists() || spriteFile.length() == 0) {
+            System.out.println("[SPRITE] Character sprite not found or corrupted. Downloading...");
+            try {
+                InputStream in = new URL(SPRITE_CHARACTER_URL).openStream();
+                Files.copy(in, Paths.get(spriteFile.getPath()), StandardCopyOption.REPLACE_EXISTING);
+                in.close();
+                System.out.println("[SPRITE] Character sprite downloaded successfully!");
+            } catch (IOException e) {
+                System.err.println("[SPRITE] Failed to download character sprite: " + e.getMessage());
+                spriteCharacter = null;
+                return;
+            }
+        } else {
+            System.out.println("[SPRITE] Character sprite already exists, using cached version.");
+        }
+
+        // Load the sprite
+        if (spriteFile.exists()) {
+            try {
+                spriteCharacter = new Image(spriteFile.toURI().toString());
+                System.out.println("[SPRITE] Character sprite loaded successfully!");
+            } catch (Exception e) {
+                System.err.println("[SPRITE] Failed to load character sprite: " + e.getMessage());
+                spriteCharacter = null;
+            }
         }
     }
 
@@ -4480,11 +5371,11 @@ public class ChromaFloodSystem extends Application {
         }
     }
 
-    private void hideLoadingScreen() {
+    public void hideLoadingScreen() {
         Platform.runLater(this::showLevelSelectScreen);  // Always restore Level Select
     }
 
-    private void showLoadingScreen() {
+    public void showLoadingScreen() {
         root.getChildren().clear();
         root.setStyle("-fx-background-color: radial-gradient(center 50% 50%, radius 80%, #1C2526, #0A0E26);");
         primaryStage.setTitle("Chroma Flood - Loading");
@@ -4606,656 +5497,10 @@ public class ChromaFloodSystem extends Application {
     }
 
     private void showProfileSettingsDialog() {
-        // Create new Stage window if it doesn't exist
-        if (profileSettingsStage == null) {
-            profileSettingsStage = new Stage();
-            profileSettingsStage.initOwner(primaryStage);
-            profileSettingsStage.initModality(Modality.WINDOW_MODAL);
-            profileSettingsStage.initStyle(StageStyle.TRANSPARENT);
-            profileSettingsStage.setTitle("Profile Settings");
-            profileSettingsStage.setResizable(false);
-
-            // Reset dialog flag when closed
-            profileSettingsStage.setOnHidden(e -> isDialogOpen = false);
-
-            // Outer container with transparent background
-            StackPane overlay = new StackPane();
-            overlay.setStyle("-fx-background-color: transparent;");
-            overlay.setPadding(new Insets(40));
-
-            // Main container
-            VBox mainContainer = new VBox(20);
-            mainContainer.setPadding(new Insets(35, 40, 35, 40));
-            mainContainer.setStyle(
-                    "-fx-background-color: linear-gradient(to bottom right, #1a1a2e, #0f0f1e);" +
-                            "-fx-background-radius: 20;" +
-                            "-fx-effect: dropshadow(gaussian, rgba(100, 100, 255, 0.4), 25, 0.5, 0, 0);"
-            );
-
-            Label titleLabel = new Label("Profile Settings");
-            titleLabel.setStyle("-fx-text-fill: #FFFFFF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 24; -fx-font-weight: bold;");
-
-            // ═══════════════════════════════════════════════════════════
-            // LEFT PANEL: PROFILE PICTURE & USERNAME
-            // ═══════════════════════════════════════════════════════════
-            VBox leftPanel = new VBox(20);
-            leftPanel.setAlignment(Pos.TOP_CENTER);
-            leftPanel.setPadding(new Insets(25, 20, 25, 20));
-            leftPanel.setStyle("-fx-background-color: rgba(30, 30, 45, 0.7); -fx-background-radius: 15; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.4), 15, 0, 0, 5);");
-            leftPanel.setPrefWidth(300);
-
-            Label pictureHeader = new Label("Profile Picture");
-            pictureHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 15; -fx-font-weight: 600;");
-
-            Circle backgroundCircle = new Circle(60);
-            backgroundCircle.setFill(Color.rgb(40, 45, 55, 0.8));
-
-            ImageView profilePreview = new ImageView();
-            profilePreview.setFitWidth(120);
-            profilePreview.setFitHeight(120);
-            Circle clipCircle = new Circle(60, 60, 60);
-            profilePreview.setClip(clipCircle);
-
-            profilePreview.setImage(currentProfileImage != null
-                    ? currentProfileImage
-                    : new Image("file:resources/images/default_profile.png"));
-
-// Stack: background → image (no outline)
-            StackPane profileStack = new StackPane(backgroundCircle, profilePreview);
-            profileStack.setEffect(new DropShadow(15, Color.rgb(0, 217, 255, 0.6)));
-
-            final File[] selectedFile = {null};
-            final byte[][] uploadedPngBytes = {null};
-
-            Button uploadButton = new Button("Upload New Picture");
-            uploadButton.setStyle("-fx-background-color: rgba(100, 100, 255, 0.15); -fx-border-color: #6464FF; -fx-border-width: 2; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #A5A5FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 12; -fx-font-weight: 600; -fx-padding: 10 20; -fx-cursor: hand;");
-            uploadButton.setPrefWidth(240);
-
-            uploadButton.setOnAction(e -> {
-                FileChooser fileChooser = new FileChooser();
-                fileChooser.getExtensionFilters().add(
-                        new FileChooser.ExtensionFilter("Image Files", "*.png", "*.jpg", "*.jpeg")
-                );
-                File file = fileChooser.showOpenDialog(profileSettingsStage);
-                if (file != null) {
-                    try {
-                        // Test if the image can be read
-                        BufferedImage testRead = ImageIO.read(file);
-                        if (testRead == null) {
-                            new Alert(Alert.AlertType.ERROR,
-                                    "Unable to read this image file. Please try a different image format (PNG or JPEG).")
-                                    .show();
-                            return;
-                        }
-                        selectedFile[0] = file;
-                        showImageCropDialog(file, profilePreview, uploadedPngBytes);
-                    } catch (Exception ex) {
-                        new Alert(Alert.AlertType.ERROR,
-                                "Failed to load image: " + ex.getMessage() +
-                                        "\n\nPlease try a PNG or JPEG file instead.")
-                                .show();
-                    }
-                }
-            });
-
-            uploadButton.setOnMouseEntered(e -> uploadButton.setStyle("-fx-background-color: rgba(120, 120, 255, 0.25); -fx-border-color: #7D7DFF; -fx-border-width: 2; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #C5C5FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 12; -fx-font-weight: 600; -fx-padding: 10 20; -fx-cursor: hand;"));
-            uploadButton.setOnMouseExited(e -> uploadButton.setStyle("-fx-background-color: rgba(100, 100, 255, 0.15); -fx-border-color: #6464FF; -fx-border-width: 2; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #A5A5FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 12; -fx-font-weight: 600; -fx-padding: 10 20; -fx-cursor: hand;"));
-
-            // Username section in left panel
-            Label usernameHeader = new Label("Username");
-            usernameHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 15; -fx-font-weight: 600;");
-
-            TextField usernameField = new TextField(currentUser);
-            usernameField.setPromptText("Enter username");
-            usernameField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;");
-
-            usernameField.textProperty().addListener((obs, oldValue, newValue) -> {
-                if (!newValue.matches("[a-zA-Z0-9_]*")) {
-                    usernameField.setText(oldValue);
-                } else if (newValue.length() > 20) {
-                    usernameField.setText(oldValue);
-                }
-            });
-
-            usernameField.setOnMouseEntered(e -> usernameField.setStyle("-fx-background-color: rgba(45, 45, 70, 0.9); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(120, 120, 255, 0.5); -fx-border-width: 1; -fx-border-radius: 10;"));
-            usernameField.setOnMouseExited(e -> usernameField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;"));
-
-            Region spacer = new Region();
-            VBox.setVgrow(spacer, Priority.ALWAYS);
-
-            leftPanel.getChildren().addAll(pictureHeader, profileStack, uploadButton, spacer, usernameHeader, usernameField);
-
-            // ═══════════════════════════════════════════════════════════
-            // RIGHT PANEL: CHANGE PASSWORD
-            // ═══════════════════════════════════════════════════════════
-            VBox rightPanel = new VBox(18);
-            rightPanel.setAlignment(Pos.TOP_LEFT);
-            rightPanel.setPadding(new Insets(25, 20, 25, 20));
-            rightPanel.setStyle("-fx-background-color: rgba(30, 30, 45, 0.7); -fx-background-radius: 15; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.4), 15, 0, 0, 5);");
-            rightPanel.setPrefWidth(380);
-
-            Label passwordHeader = new Label("Change Password");
-            passwordHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 15; -fx-font-weight: 600;");
-
-            // Base styles for password fields
-            String basePasswordStyle = "-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12 45 12 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;";
-            String hoverPasswordStyle = "-fx-background-color: rgba(45, 45, 70, 0.9); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12 45 12 12; -fx-background-radius: 10; -fx-border-color: rgba(120, 120, 255, 0.5); -fx-border-width: 1; -fx-border-radius: 10;";
-
-            // Current Password with toggle
-            StackPane oldPasswordContainer = new StackPane();
-
-            PasswordField oldPasswordField = new PasswordField();
-            oldPasswordField.setPromptText("Current Password");
-            oldPasswordField.setStyle(basePasswordStyle);
-
-            TextField oldPasswordTextField = new TextField();
-            oldPasswordTextField.setPromptText("Current Password");
-            oldPasswordTextField.setStyle(basePasswordStyle);
-            oldPasswordTextField.setVisible(false);
-            oldPasswordTextField.setManaged(false);
-
-            oldPasswordTextField.textProperty().bindBidirectional(oldPasswordField.textProperty());
-
-            // Character limit for old password
-            oldPasswordField.textProperty().addListener((obs, oldValue, newValue) -> {
-                if (newValue.length() > 32) {
-                    oldPasswordField.setText(oldValue);
-                }
-            });
-            oldPasswordTextField.textProperty().addListener((obs, oldValue, newValue) -> {
-                if (newValue.length() > 32) {
-                    oldPasswordTextField.setText(oldValue);
-                }
-            });
-
-            Button toggleOldPasswordButton = new Button("👁");
-            toggleOldPasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00D9FF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
-            toggleOldPasswordButton.setPrefSize(30, 30);
-            toggleOldPasswordButton.setFocusTraversable(false);
-
-            StackPane.setAlignment(toggleOldPasswordButton, Pos.CENTER_RIGHT);
-            StackPane.setMargin(toggleOldPasswordButton, new Insets(0, 10, 0, 0));
-
-            toggleOldPasswordButton.setOnAction(ev -> {
-                if (oldPasswordField.isVisible()) {
-                    oldPasswordField.setVisible(false);
-                    oldPasswordField.setManaged(false);
-                    oldPasswordTextField.setVisible(true);
-                    oldPasswordTextField.setManaged(true);
-                    toggleOldPasswordButton.setText("🙈");
-                } else {
-                    oldPasswordTextField.setVisible(false);
-                    oldPasswordTextField.setManaged(false);
-                    oldPasswordField.setVisible(true);
-                    oldPasswordField.setManaged(true);
-                    toggleOldPasswordButton.setText("👁");
-                }
-                mainContainer.requestFocus();
-            });
-
-            // Hover effects for old password
-            oldPasswordField.setOnMouseEntered(e -> {
-                oldPasswordField.setStyle(hoverPasswordStyle);
-                oldPasswordTextField.setStyle(hoverPasswordStyle);
-            });
-            oldPasswordField.setOnMouseExited(e -> {
-                oldPasswordField.setStyle(basePasswordStyle);
-                oldPasswordTextField.setStyle(basePasswordStyle);
-            });
-            oldPasswordTextField.setOnMouseEntered(e -> {
-                oldPasswordField.setStyle(hoverPasswordStyle);
-                oldPasswordTextField.setStyle(hoverPasswordStyle);
-            });
-            oldPasswordTextField.setOnMouseExited(e -> {
-                oldPasswordField.setStyle(basePasswordStyle);
-                oldPasswordTextField.setStyle(basePasswordStyle);
-            });
-
-            oldPasswordContainer.getChildren().addAll(oldPasswordField, oldPasswordTextField, toggleOldPasswordButton);
-
-            // New Password with toggle
-            StackPane newPasswordContainer = new StackPane();
-
-            PasswordField newPasswordField = new PasswordField();
-            newPasswordField.setPromptText("New Password");
-            newPasswordField.setStyle(basePasswordStyle);
-
-            TextField newPasswordTextField = new TextField();
-            newPasswordTextField.setPromptText("New Password");
-            newPasswordTextField.setStyle(basePasswordStyle);
-            newPasswordTextField.setVisible(false);
-            newPasswordTextField.setManaged(false);
-
-            newPasswordTextField.textProperty().bindBidirectional(newPasswordField.textProperty());
-
-            // Character limit for new password
-            newPasswordField.textProperty().addListener((obs, oldValue, newValue) -> {
-                if (newValue.length() > 32) {
-                    newPasswordField.setText(oldValue);
-                }
-            });
-            newPasswordTextField.textProperty().addListener((obs, oldValue, newValue) -> {
-                if (newValue.length() > 32) {
-                    newPasswordTextField.setText(oldValue);
-                }
-            });
-
-            Button toggleNewPasswordButton = new Button("👁");
-            toggleNewPasswordButton.setStyle("-fx-background-color: transparent; -fx-text-fill: #00D9FF; -fx-font-size: 16; -fx-cursor: hand; -fx-padding: 5;");
-            toggleNewPasswordButton.setPrefSize(30, 30);
-            toggleNewPasswordButton.setFocusTraversable(false);
-
-            StackPane.setAlignment(toggleNewPasswordButton, Pos.CENTER_RIGHT);
-            StackPane.setMargin(toggleNewPasswordButton, new Insets(0, 10, 0, 0));
-
-            toggleNewPasswordButton.setOnAction(ev -> {
-                if (newPasswordField.isVisible()) {
-                    newPasswordField.setVisible(false);
-                    newPasswordField.setManaged(false);
-                    newPasswordTextField.setVisible(true);
-                    newPasswordTextField.setManaged(true);
-                    toggleNewPasswordButton.setText("🙈");
-                } else {
-                    newPasswordTextField.setVisible(false);
-                    newPasswordTextField.setManaged(false);
-                    newPasswordField.setVisible(true);
-                    newPasswordField.setManaged(true);
-                    toggleNewPasswordButton.setText("👁");
-                }
-                mainContainer.requestFocus();
-            });
-
-            // Hover effects for new password
-            newPasswordField.setOnMouseEntered(e -> {
-                newPasswordField.setStyle(hoverPasswordStyle);
-                newPasswordTextField.setStyle(hoverPasswordStyle);
-            });
-            newPasswordField.setOnMouseExited(e -> {
-                newPasswordField.setStyle(basePasswordStyle);
-                newPasswordTextField.setStyle(basePasswordStyle);
-            });
-            newPasswordTextField.setOnMouseEntered(e -> {
-                newPasswordField.setStyle(hoverPasswordStyle);
-                newPasswordTextField.setStyle(hoverPasswordStyle);
-            });
-            newPasswordTextField.setOnMouseExited(e -> {
-                newPasswordField.setStyle(basePasswordStyle);
-                newPasswordTextField.setStyle(basePasswordStyle);
-            });
-
-            newPasswordContainer.getChildren().addAll(newPasswordField, newPasswordTextField, toggleNewPasswordButton);
-
-            // Confirm Password (no toggle)
-            // Confirm Password (no toggle)
-            PasswordField confirmPasswordField = new PasswordField();
-            confirmPasswordField.setPromptText("Confirm New Password");
-            confirmPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;");
-
-            // Character limit for confirm password
-            confirmPasswordField.textProperty().addListener((obs, oldValue, newValue) -> {
-                if (newValue.length() > 32) {
-                    confirmPasswordField.setText(oldValue);
-                }
-            });
-
-            confirmPasswordField.setOnMouseEntered(e -> confirmPasswordField.setStyle("-fx-background-color: rgba(45, 45, 70, 0.9); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(120, 120, 255, 0.5); -fx-border-width: 1; -fx-border-radius: 10;"));
-            confirmPasswordField.setOnMouseExited(e -> confirmPasswordField.setStyle("-fx-background-color: rgba(40, 40, 60, 0.8); -fx-text-fill: #FFFFFF; -fx-prompt-text-fill: #888888; -fx-font-size: 14; -fx-padding: 12; -fx-background-radius: 10; -fx-border-color: rgba(100, 100, 255, 0.3); -fx-border-width: 1; -fx-border-radius: 10;"));
-
-            Label passwordHint = new Label("Leave all fields blank to keep your current password");
-            passwordHint.setStyle("-fx-text-fill: #888899; -fx-font-size: 11; -fx-font-style: italic; -fx-padding: 5 0 0 0;");
-
-            rightPanel.getChildren().addAll(passwordHeader, oldPasswordContainer, newPasswordContainer, confirmPasswordField, passwordHint);
-
-            // ═══════════════════════════════════════════════════════════
-            // CONTENT LAYOUT (LANDSCAPE)
-            // ═══════════════════════════════════════════════════════════
-            HBox contentLayout = new HBox(25);
-            contentLayout.setAlignment(Pos.CENTER);
-            contentLayout.getChildren().addAll(leftPanel, rightPanel);
-
-            // ═══════════════════════════════════════════════════════════
-            // ACTION BUTTONS
-            // ═══════════════════════════════════════════════════════════
-            HBox buttonBox = new HBox(15);
-            buttonBox.setAlignment(Pos.CENTER);
-
-            Button saveButton = new Button("Save Changes");
-            saveButton.setStyle("-fx-background-color: linear-gradient(to right, #00D9FF, #0099FF); -fx-text-fill: white; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-background-radius: 10; -fx-effect: dropshadow(gaussian, rgba(0, 153, 255, 0.5), 12, 0, 0, 3); -fx-cursor: hand;");
-            saveButton.setPrefWidth(200);
-
-            saveButton.setOnMouseEntered(e -> saveButton.setStyle("-fx-background-color: linear-gradient(to right, #00EEFF, #00AAFF); -fx-text-fill: white; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-background-radius: 10; -fx-effect: dropshadow(gaussian, rgba(0, 153, 255, 0.7), 15, 0, 0, 4); -fx-cursor: hand;"));
-            saveButton.setOnMouseExited(e -> saveButton.setStyle("-fx-background-color: linear-gradient(to right, #00D9FF, #0099FF); -fx-text-fill: white; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-background-radius: 10; -fx-effect: dropshadow(gaussian, rgba(0, 153, 255, 0.5), 12, 0, 0, 3); -fx-cursor: hand;"));
-
-            saveButton.setOnAction(e -> {
-                final String newUsername = usernameField.getText().trim();
-                final String oldPassword = oldPasswordField.getText();
-                final String newPassword = newPasswordField.getText();
-                final String confirmPassword = confirmPasswordField.getText();
-
-                // Validation
-                if (newUsername.isEmpty() || newUsername.length() < 3 || newUsername.length() > 20) {
-                    new Alert(Alert.AlertType.ERROR, "Username must be 3–20 characters.").show();
-                    return;
-                }
-
-                // Password validation (if attempting to change)
-                boolean changingPassword = !oldPassword.isEmpty() || !newPassword.isEmpty() || !confirmPassword.isEmpty();
-
-                if (changingPassword) {
-                    if (oldPassword.isEmpty()) {
-                        new Alert(Alert.AlertType.ERROR, "Please enter your current password.").show();
-                        return;
-                    }
-                    if (newPassword.isEmpty()) {
-                        new Alert(Alert.AlertType.ERROR, "Please enter a new password.").show();
-                        return;
-                    }
-                    if (newPassword.length() < 8 || newPassword.length() > 32) {
-                        new Alert(Alert.AlertType.ERROR, "New password must be between 8 and 32 characters.").show();
-                        return;
-                    }
-                    if (!newPassword.equals(confirmPassword)) {
-                        new Alert(Alert.AlertType.ERROR, "Passwords do not match.").show();
-                        return;
-                    }
-                }
-
-                saveButton.setDisable(true);
-                showLoadingScreen();
-
-                Task<Void> task = new Task<>() {
-                    @Override
-                    protected Void call() throws Exception {
-                        // ─────── VERIFY OLD PASSWORD IF CHANGING ───────
-                        if (changingPassword) {
-                            String verifyUrl = SUPABASE_URL + "/rest/v1/rpc/verify_password";
-                            JsonObject verifyPayload = new JsonObject();
-                            verifyPayload.addProperty("p_username", currentUser);
-                            verifyPayload.addProperty("p_password", oldPassword);
-
-                            HttpRequest verifyRequest = HttpRequest.newBuilder()
-                                    .uri(URI.create(verifyUrl))
-                                    .header("apikey", SUPABASE_ANON_KEY)
-                                    .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
-                                    .header("Content-Type", "application/json")
-                                    .POST(HttpRequest.BodyPublishers.ofString(verifyPayload.toString()))
-                                    .build();
-
-                            HttpResponse<String> verifyResp = httpClient.send(verifyRequest, HttpResponse.BodyHandlers.ofString());
-                            if (!verifyResp.body().equalsIgnoreCase("true")) {
-                                throw new Exception("Current password is incorrect.");
-                            }
-                        }
-
-                        // ─────── CHECK IF USERNAME ALREADY EXISTS ───────
-                        // Only check if username is changing
-                        if (!newUsername.equals(currentUser)) {
-                            String checkUrl = SUPABASE_URL + "/rest/v1/profiles?username=eq." +
-                                    URLEncoder.encode(newUsername, StandardCharsets.UTF_8);
-
-                            HttpRequest checkRequest = HttpRequest.newBuilder()
-                                    .uri(URI.create(checkUrl))
-                                    .header("apikey", SUPABASE_ANON_KEY)
-                                    .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
-                                    .GET()
-                                    .build();
-
-                            HttpResponse<String> checkResp = httpClient.send(checkRequest,
-                                    HttpResponse.BodyHandlers.ofString());
-
-                            // Parse response - if array is not empty, username exists
-                            if (!checkResp.body().equals("[]")) {
-                                throw new Exception("USERNAME_TAKEN");
-                            }
-                        }
-
-                        JsonObject payload = new JsonObject();
-                        payload.addProperty("username", newUsername);
-
-                        // ─────── ADD NEW PASSWORD TO PAYLOAD IF CHANGING ───────
-                        if (changingPassword) {
-                            // Hash the new password using BCrypt
-                            String hashedPassword = BCrypt.hashpw(newPassword, BCrypt.gensalt(10));
-                            payload.addProperty("password", hashedPassword);
-                        }
-
-                        // ─────── PROFILE PICTURE PROCESSING ───────
-                        if (uploadedPngBytes[0] != null) {
-                            try {
-                                // Use the already-cropped bytes directly (300x300 from crop dialog)
-                                byte[] bytes = uploadedPngBytes[0];
-
-                                // For a 300x300 PNG, we can afford better quality
-                                // Supabase free tier: 500MB storage, so 200-300KB per image is fine
-                                if (bytes.length > 300_000) {  // Increased from 180KB to 300KB
-                                    ByteArrayOutputStream out = new ByteArrayOutputStream();
-                                    BufferedImage buf = ImageIO.read(new ByteArrayInputStream(bytes));
-
-                                    // Try PNG optimization first (better quality than JPEG)
-                                    ImageIO.write(buf, "png", out);
-                                    byte[] pngBytes = out.toByteArray();
-
-                                    // Only convert to JPEG if PNG is still too large
-                                    if (pngBytes.length > 300_000) {
-                                        out.reset();
-                                        BufferedImage jpeg = new BufferedImage(buf.getWidth(), buf.getHeight(), BufferedImage.TYPE_INT_RGB);
-                                        Graphics2D g = jpeg.createGraphics();
-                                        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                                        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-                                        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                                        g.setBackground(java.awt.Color.WHITE);
-                                        g.clearRect(0, 0, jpeg.getWidth(), jpeg.getHeight());
-                                        g.drawImage(buf, 0, 0, null);
-                                        g.dispose();
-
-                                        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
-                                        if (writers.hasNext()) {
-                                            ImageWriter writer = writers.next();
-                                            ImageWriteParam p = writer.getDefaultWriteParam();
-                                            p.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-                                            p.setCompressionQuality(0.95f);  // Increased from 0.87 to 0.95 for better quality
-                                            try (ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
-                                                writer.setOutput(ios);
-                                                writer.write(null, new IIOImage(jpeg, null, null), p);
-                                            }
-                                            writer.dispose();
-                                        }
-                                        bytes = out.toByteArray();
-                                    } else {
-                                        bytes = pngBytes;  // Use PNG if it's small enough
-                                    }
-                                }
-
-                                String base64 = Base64.getEncoder().encodeToString(bytes);
-                                payload.addProperty("profile_picture_bytes", base64);
-                                payload.addProperty("profile_picture", (String) null);
-
-                                final Image finalImg = new Image(new ByteArrayInputStream(bytes));
-                                Platform.runLater(() -> {
-                                    currentProfileImage = finalImg;
-                                    if (topBarProfilePicView != null) topBarProfilePicView.setImage(finalImg);
-                                    if (levelSelectProfileView != null) levelSelectProfileView.setImage(finalImg);
-                                });
-
-                            } catch (Exception ex) {
-                                ex.printStackTrace();
-                                Platform.runLater(() -> new Alert(Alert.AlertType.ERROR,
-                                        "Failed to process image: " + ex.getMessage()).show());
-                            }
-                            uploadedPngBytes[0] = null;
-                        }
-
-                        // ─────── UPDATE PROFILE ───────
-                        String selectFilter = URLEncoder.encode(currentUser, StandardCharsets.UTF_8);
-                        String profileUrl = SUPABASE_URL + "/rest/v1/profiles?username=eq." + selectFilter;
-
-                        HttpRequest request = HttpRequest.newBuilder()
-                                .uri(URI.create(profileUrl))
-                                .header("apikey", SUPABASE_ANON_KEY)
-                                .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
-                                .header("Content-Type", "application/json")
-                                .header("Prefer", "return=representation")
-                                .method("PATCH", HttpRequest.BodyPublishers.ofString(payload.toString()))
-                                .build();
-
-                        HttpResponse<String> resp = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-                        if (resp.statusCode() != 200 && resp.statusCode() != 204) {
-                            throw new Exception("Profile update failed: " + resp.body());
-                        }
-
-                        Platform.runLater(() -> {
-                            currentUser = newUsername;
-                            saveLoginToken(newUsername);
-
-                            if (usernameLabel != null) {
-                                usernameLabel.setText(newUsername);
-                            }
-
-                            // CRITICAL: Invalidate profile picture cache for this user
-                            // This ensures leaderboard shows the updated picture immediately
-                            invalidateProfilePictureCache(newUsername);
-
-                            // If username changed, also invalidate the old username's cache
-                            if (!newUsername.equals(currentUser)) {
-                                invalidateProfilePictureCache(currentUser);
-                            }
-
-                            refreshLeaderboardData();
-                            profileSettingsStage.close();
-
-                            String message = changingPassword ? "Profile and password updated!" : "Profile updated!";
-                            showToastNotification(message);
-                        });
-
-                        return null;
-                    }
-
-                    @Override
-                    protected void failed() {
-                        Platform.runLater(() -> {
-                            String errorMessage;
-                            String exMsg = getException().getMessage();
-
-                            if ("USERNAME_TAKEN".equals(exMsg)) {
-                                errorMessage = "This username is already taken. Please choose a different username.";
-                            } else if (exMsg != null && exMsg.contains("Current password is incorrect")) {
-                                errorMessage = "Current password is incorrect.";
-                            } else {
-                                errorMessage = "Failed to save profile. Please try again.";
-                            }
-
-                            new Alert(Alert.AlertType.ERROR, errorMessage).show();
-                            saveButton.setDisable(false);
-                            hideLoadingScreen();
-                        });
-                    }
-
-                    @Override
-                    protected void succeeded() {
-                        Platform.runLater(() -> {
-                            hideLoadingScreen();
-                            saveButton.setDisable(false);
-                        });
-                    }
-                };
-
-                executor.submit(task);
-            });
-
-            Button closeButton = new Button("Cancel");
-            closeButton.setStyle("-fx-background-color: rgba(60, 60, 80, 0.5); -fx-border-color: rgba(100, 100, 120, 0.6); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #AAAACC; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;");
-            closeButton.setPrefWidth(200);
-            closeButton.setOnAction(e -> profileSettingsStage.close());
-
-            closeButton.setOnMouseEntered(e -> closeButton.setStyle("-fx-background-color: rgba(70, 70, 90, 0.7); -fx-border-color: rgba(120, 120, 140, 0.8); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #CCCCEE; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;"));
-            closeButton.setOnMouseExited(e -> closeButton.setStyle("-fx-background-color: rgba(60, 60, 80, 0.5); -fx-border-color: rgba(100, 100, 120, 0.6); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #AAAACC; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;"));
-
-            buttonBox.getChildren().addAll(saveButton, closeButton);
-
-            // Only add children if mainContainer is empty (first time creation)
-            if (mainContainer.getChildren().isEmpty()) {
-                mainContainer.getChildren().addAll(
-                        titleLabel,
-                        contentLayout,
-                        buttonBox
-                );
-            }
-
-            overlay.getChildren().add(mainContainer);
-            StackPane.setAlignment(mainContainer, Pos.CENTER);
-
-            // Create scene with transparent background
-            Scene scene = new Scene(overlay, 860, 660);
-            scene.setFill(Color.TRANSPARENT);
-
-            profileSettingsStage.setScene(scene);
-
-            // Perfect centering
-            profileSettingsStage.setOnShown(e -> {
-                double x = primaryStage.getX() + (primaryStage.getWidth() - profileSettingsStage.getWidth()) / 2;
-                double y = primaryStage.getY() + (primaryStage.getHeight() - profileSettingsStage.getHeight()) / 2;
-                profileSettingsStage.setX(x);
-                profileSettingsStage.setY(y);
-            });
-        } else {
-            // Reset field values when reopening
-            VBox mainContainer = (VBox) ((StackPane) profileSettingsStage.getScene().getRoot()).getChildren().get(0);
-            // Find and reset the username field and password fields
-            HBox contentLayout = (HBox) mainContainer.getChildren().get(1);
-            VBox leftPanel = (VBox) contentLayout.getChildren().get(0);
-            StackPane profileStack = (StackPane) leftPanel.getChildren().get(1);
-            ImageView profilePreview = (ImageView) profileStack.getChildren().get(1);
-
-            // Simply update the preview with the current image (no delay needed)
-            if (currentProfileImage != null) {
-                profilePreview.setImage(currentProfileImage);
-            } else {
-                profilePreview.setImage(new Image("file:resources/images/default_profile.png"));
-            }
-
-            TextField usernameField = (TextField) leftPanel.getChildren().get(leftPanel.getChildren().size() - 1);
-            usernameField.setText(currentUser);
-
-            VBox rightPanel = (VBox) contentLayout.getChildren().get(1);
-
-            // Reset old password container
-            StackPane oldPassContainer = (StackPane) rightPanel.getChildren().get(1);
-            PasswordField oldPassField = (PasswordField) oldPassContainer.getChildren().get(0);
-            TextField oldPassTextField = (TextField) oldPassContainer.getChildren().get(1);
-            Button oldPassToggle = (Button) oldPassContainer.getChildren().get(2);
-            oldPassField.clear();
-            oldPassTextField.clear();
-            // Reset to hidden state
-            oldPassField.setVisible(true);
-            oldPassField.setManaged(true);
-            oldPassTextField.setVisible(false);
-            oldPassTextField.setManaged(false);
-            oldPassToggle.setText("👁");
-
-            // Reset new password container
-            StackPane newPassContainer = (StackPane) rightPanel.getChildren().get(2);
-            PasswordField newPassField = (PasswordField) newPassContainer.getChildren().get(0);
-            TextField newPassTextField = (TextField) newPassContainer.getChildren().get(1);
-            Button newPassToggle = (Button) newPassContainer.getChildren().get(2);
-            newPassField.clear();
-            newPassTextField.clear();
-            // Reset to hidden state
-            newPassField.setVisible(true);
-            newPassField.setManaged(true);
-            newPassTextField.setVisible(false);
-            newPassTextField.setManaged(false);
-            newPassToggle.setText("👁");
-
-            // Clear confirm password
-            ((PasswordField) rightPanel.getChildren().get(3)).clear();
-        }
-
-        // Show the stage window
-        profileSettingsStage.show();
-        profileSettingsStage.requestFocus();
+        new ProfileSettingsDialog(this, primaryStage).show();
     }
 
-    private void showImageCropDialog(File imageFile, ImageView previewTarget, byte[][] uploadBytesTarget) {
+    public void showImageCropDialog(File imageFile, ImageView previewTarget, byte[][] uploadBytesTarget) {
         Stage cropStage = new Stage();
         Stage owner = (profileSettingsStage != null) ? profileSettingsStage : primaryStage;
         cropStage.initOwner(owner);
@@ -5480,7 +5725,7 @@ public class ChromaFloodSystem extends Application {
 
 
             // Size info label
-            Label sizeLabel = new Label("Output: 300×300px • Professional circular format");
+            Label sizeLabel = new Label("Output: 300×300px");
             sizeLabel.setStyle("-fx-text-fill: #00D9FF; -fx-font-size: 12; -fx-font-weight: 600;");
             sizeLabel.setAlignment(Pos.CENTER);
 
@@ -5583,7 +5828,7 @@ public class ChromaFloodSystem extends Application {
         }
     }
 
-    private void invalidateProfilePictureCache(String username) {
+    public void invalidateProfilePictureCache(String username) {
         if (username == null || username.isEmpty()) return;
 
         profilePictureCache.remove(username);
@@ -5604,7 +5849,7 @@ public class ChromaFloodSystem extends Application {
         }
     }
 
-    private void showToastNotification(String message) {
+    public void showToastNotification(String message) {
         Label toast = new Label(message);
         toast.setStyle("-fx-background-color: rgba(0, 255, 100, 0.9); -fx-text-fill: white; " +
                 "-fx-font-size: 14; -fx-padding: 15 25; -fx-background-radius: 10; " +
@@ -5817,125 +6062,8 @@ public class ChromaFloodSystem extends Application {
         }
     }
 
-    // NEW: Login with Supabase
-    private void loginWithSupabase(String username, String password, Button loginButton, boolean keepLoggedIn) {
-        executor.submit(() -> {
-            try {
-                String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + username
-                        + "&select=username,password,profile_picture_bytes,unlocked_levels,effects_muted,music_muted,volume,banned,ban_reason,is_admin";
-
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .header("apikey", SUPABASE_ANON_KEY)
-                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
-                        .GET()
-                        .build();
-
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-                Platform.runLater(() -> {
-                    loginButton.setDisable(false);
-                    hideLoadingScreen();
-                    isNavigating = false;
-
-                    if (response.statusCode() == 200) {
-                        String body = response.body();
-                        if (body == null || body.trim().isEmpty() || body.equals("[]")) {
-                            new Alert(AlertType.ERROR, "Incorrect username or password.").showAndWait();
-                            showLoginScreen(); // Return to login screen
-                            return;
-                        }
-
-                        JsonArray array = gson.fromJson(body, JsonArray.class);
-                        JsonObject userData = array.get(0).getAsJsonObject();
-
-                        boolean isBanned = userData.has("banned") && userData.get("banned").getAsBoolean();
-                        if (isBanned) {
-                            String banReason = userData.has("ban_reason") && !userData.get("ban_reason").isJsonNull()
-                                    ? userData.get("ban_reason").getAsString()
-                                    : "No reason provided";
-
-                            boolean hasAppeal = userData.has("appeal_submitted") && userData.get("appeal_submitted").getAsBoolean();
-                            String appealStatus = userData.has("appeal_status") && !userData.get("appeal_status").isJsonNull()
-                                    ? userData.get("appeal_status").getAsString()
-                                    : "none";
-
-                            showBannedDialog(username, banReason, hasAppeal, appealStatus);
-                            showLoginScreen(); // Return to login screen after showing ban dialog
-                            return;
-                        }
-
-                        String storedHash = userData.get("password").getAsString();
-                        if (!BCrypt.checkpw(password, storedHash)) {
-                            new Alert(AlertType.ERROR, "Incorrect username or password.").showAndWait();
-                            showLoginScreen(); // Return to login screen
-                            return;
-                        }
-
-                        // SUCCESS
-                        currentUser = username;
-                        boolean isAdmin = userData.has("is_admin") && userData.get("is_admin").getAsBoolean();
-
-                        if (!isAdmin) {
-                            String rawBase64 = userData.has("profile_picture_bytes") && !userData.get("profile_picture_bytes").isJsonNull()
-                                    ? userData.get("profile_picture_bytes").getAsString().trim() : null;
-                            currentProfileImage = safeLoadProfileImage(rawBase64);
-
-                            unlockedLevels.clear();
-                            if (userData.has("unlocked_levels") && !userData.get("unlocked_levels").isJsonNull()) {
-                                String levelsStr = userData.get("unlocked_levels").getAsString();
-                                for (String s : levelsStr.split(",")) {
-                                    if (!s.trim().isEmpty()) unlockedLevels.add(Integer.parseInt(s.trim()));
-                                }
-                            }
-
-                            isEffectsMuted = userData.get("effects_muted").getAsBoolean();
-                            isMusicMuted = userData.get("music_muted").getAsBoolean();
-                            audioVolume = userData.has("volume") ? userData.get("volume").getAsDouble() : 1.0;
-                            updateAudioSettings();
-                        } else {
-                            currentProfileImage = new Image("file:resources/images/admin_profile.png");
-                        }
-
-                        if (keepLoggedIn) saveLoginToken(username);
-                        else deleteLoginToken();
-
-                        if (isAdmin) {
-                            showAdminPanel();
-                        } else {
-                            showLevelSelectScreen();
-                            startMaintenanceMonitoring();
-                        }
-                    } else {
-                        new Alert(AlertType.ERROR, "Server error: " + response.statusCode()).showAndWait();
-                        showLoginScreen(); // Return to login screen
-                    }
-                });
-
-            } catch (java.net.ConnectException | java.nio.channels.UnresolvedAddressException e) {
-                System.out.println("[LOGIN] Connection error detected: " + e.getMessage());
-                Platform.runLater(() -> {
-                    loginButton.setDisable(false);
-                    hideLoadingScreen();
-                    isNavigating = false;
-                    showLoginScreen(); // Return to login screen
-                });
-            } catch (Exception e) {
-                Platform.runLater(() -> {
-                    loginButton.setDisable(false);
-                    hideLoadingScreen();
-                    isNavigating = false;
-                    new Alert(AlertType.ERROR, "Connection failed: " + e.getMessage()).showAndWait();
-                    showLoginScreen(); // Return to login screen
-                    e.printStackTrace();
-                });
-            }
-        });
-    }
-
-
     private void showAdminPanel() {
-        new AdminPanel(this).show();    // ← change AdminPanelScreen → AdminPanel
+        new AdminPanel(this).show();
     }
 
     public void showResetProgressDialog() {
@@ -7610,16 +7738,12 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || item == null) {
                         setText(null);
-                        setGraphic(null);
                         setStyle("");
                     } else {
-                        Label label = new Label(item);
-                        label.setStyle("-fx-text-fill: #00ffcc; -fx-font-weight: bold; -fx-font-size: 14px;");
-                        setGraphic(label);
-                        setText(null);
-                        setStyle("-fx-alignment: CENTER-LEFT;");
+                        setText(item);
+                        // CHANGED: Match user management style exactly
+                        setStyle("-fx-text-fill: #00ffcc; -fx-font-weight: bold; -fx-font-size: 14px; -fx-alignment: CENTER-LEFT; -fx-padding: 20 10 10 10;");
                     }
-                    setPadding(new Insets(10, 10, 10, 10));
                 }
             });
 
@@ -7637,20 +7761,16 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || item == null) {
                         setText(null);
-                        setGraphic(null);
                         setStyle("");
                     } else {
                         String color = item.equals("PENDING") ? "#ffaa00" :
                                 item.equals("APPROVED") ? "#44ff44" :
-                                        item.equals("RESOLVED") ? "#00ccff" :  // Cyan for resolved
-                                                "#ff4444";  // Red for rejected
-                        Label label = new Label(item);
-                        label.setStyle("-fx-text-fill: " + color + "; -fx-font-weight: bold; -fx-font-size: 13px;");
-                        setGraphic(label);
-                        setText(null);
-                        setStyle("-fx-alignment: CENTER;");
+                                        item.equals("RESOLVED") ? "#00ccff" :
+                                                "#ff4444";
+                        setText(item);
+                        // CHANGED: Match user management style exactly
+                        setStyle("-fx-text-fill: " + color + "; -fx-font-weight: bold; -fx-font-size: 13px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                     }
-                    setPadding(new Insets(10, 10, 10, 10));
                 }
             });
 
@@ -7670,16 +7790,12 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || item == null) {
                         setText(null);
-                        setGraphic(null);
                         setStyle("");
                     } else {
-                        Label label = new Label(item);
-                        label.setStyle("-fx-text-fill: #ffffff; -fx-font-size: 14px;");
-                        setGraphic(label);
-                        setText(null);
-                        setStyle("-fx-alignment: CENTER;");
+                        setText(item);
+                        // CHANGED: Match user management style exactly
+                        setStyle("-fx-text-fill: #ffffff; -fx-font-size: 14px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                     }
-                    setPadding(new Insets(10, 10, 10, 10));
                 }
             });
 
@@ -7694,7 +7810,6 @@ public class ChromaFloodSystem extends Application {
                 private final Button viewBtn = new Button("View");
                 private final Button approveBtn = new Button("Approve");
                 private final Button rejectBtn = new Button("Reject");
-                private final HBox buttonBox = new HBox(8);
 
                 {
                     viewBtn.setPrefWidth(80);
@@ -7721,11 +7836,6 @@ public class ChromaFloodSystem extends Application {
 
                     rejectBtn.setOnMouseEntered(e -> rejectBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #ff6666, #ee4444); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 12; -fx-background-radius: 8; -fx-cursor: hand; -fx-font-size: 11;"));
                     rejectBtn.setOnMouseExited(e -> rejectBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #ff4444, #cc2222); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 12; -fx-background-radius: 8; -fx-cursor: hand; -fx-font-size: 11;"));
-
-                    // Setup button box
-                    buttonBox.setAlignment(Pos.CENTER);
-                    buttonBox.setPadding(new Insets(5, 10, 5, 10));
-                    buttonBox.getChildren().addAll(viewBtn, approveBtn, rejectBtn);
                 }
 
                 @Override
@@ -7741,12 +7851,29 @@ public class ChromaFloodSystem extends Application {
                     String username = appeal.get("username").getAsString();
                     String appealText = appeal.get("appeal_text").getAsString();
 
-                    viewBtn.setOnAction(e -> showAppealDetailDialog(username, appealText));
-                    approveBtn.setOnAction(e -> updateAppealStatus(username, "approved", banAppealsTable));
-                    rejectBtn.setOnAction(e -> updateAppealStatus(username, "rejected", banAppealsTable));
+                    // FIXED: Add modal check to all button actions
+                    viewBtn.setOnAction(e -> {
+                        if (isModalDialogOpen) return;
+                        isModalDialogOpen = true;
+                        showAppealDetailDialog(username, appealText);
+                    });
 
-                    setGraphic(buttonBox);
-                    setStyle("-fx-alignment: CENTER; -fx-padding: 5 10 5 10;");
+                    approveBtn.setOnAction(e -> {
+                        if (isModalDialogOpen) return;
+                        isModalDialogOpen = true;
+                        updateAppealStatus(username, "approved", banAppealsTable);
+                    });
+
+                    rejectBtn.setOnAction(e -> {
+                        if (isModalDialogOpen) return;
+                        isModalDialogOpen = true;
+                        updateAppealStatus(username, "rejected", banAppealsTable);
+                    });
+
+                    HBox box = new HBox(6, viewBtn, approveBtn, rejectBtn);
+                    box.setAlignment(Pos.CENTER);
+                    setGraphic(box);
+                    setStyle("-fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                 }
             });
 
@@ -8151,6 +8278,9 @@ public class ChromaFloodSystem extends Application {
                         "-fx-border-width: 2;" +
                         "-fx-cursor: hand;"
         ));
+
+        detailStage.setOnHidden(e -> isModalDialogOpen = false);
+
         closeButton.setOnAction(e -> detailStage.close());
 
         HBox topBar = new HBox(closeButton);
@@ -8271,7 +8401,11 @@ public class ChromaFloodSystem extends Application {
                         "Cancel"
                 );
 
-                if (!confirmed) return;
+                if (!confirmed) {
+                    // ADDED: Reset flag if cancelled
+                    isModalDialogOpen = false;
+                    return;
+                }
 
                 executor.submit(() -> {
                     try {
@@ -8294,6 +8428,9 @@ public class ChromaFloodSystem extends Application {
                                         "Appeal " + actionText.substring(0, 1).toUpperCase() + actionText.substring(1) + "d",
                                         "Successfully " + actionText + "d appeal from \"" + username + "\"."
                                 );
+                                loadAppealsPage();
+
+                                isModalDialogOpen = false;
 
                                 // Update table
                                 table.getItems().forEach(appeal -> {
@@ -8311,6 +8448,7 @@ public class ChromaFloodSystem extends Application {
                         Platform.runLater(() -> {
                             Alert alert = new Alert(Alert.AlertType.ERROR, "Error: " + ex.getMessage());
                             alert.showAndWait();
+                            isModalDialogOpen = false;
                         });
                     }
                 });
@@ -8752,12 +8890,12 @@ public class ChromaFloodSystem extends Application {
                         setStyle("");
                     } else {
                         setText(item);
-                        setStyle("-fx-text-fill: #00ffcc; -fx-font-weight: bold; -fx-font-size: 14px; -fx-alignment: CENTER-LEFT;");
+                        setStyle("-fx-text-fill: #00ffcc; -fx-font-weight: bold; -fx-font-size: 14px; -fx-alignment: CENTER-LEFT; -fx-padding: 20 10 10 10;");
                     }
                 }
             });
 
-            // LEVEL COLUMN
+// LEVEL COLUMN
             TableColumn<JsonObject, String> colLevel = new TableColumn<>("UNLOCKED");
             colLevel.setMinWidth(100);
             colLevel.setMaxWidth(120);
@@ -8782,12 +8920,12 @@ public class ChromaFloodSystem extends Application {
 
                         // Display the count followed by "levels"
                         setText(unlockedCount + " levels");
-                        setStyle("-fx-text-fill: #ffffff; -fx-font-size: 14px; -fx-alignment: CENTER;");
+                        setStyle("-fx-text-fill: #ffffff; -fx-font-size: 14px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                     }
                 }
             });
 
-            // STATUS COLUMN
+// STATUS COLUMN
             TableColumn<JsonObject, Boolean> colBanned = new TableColumn<>("STATUS");
             colBanned.setMinWidth(100);
             colBanned.setMaxWidth(120);
@@ -8804,13 +8942,13 @@ public class ChromaFloodSystem extends Application {
                     } else {
                         setText(item ? "BANNED" : "ACTIVE");
                         setStyle(item ?
-                                "-fx-text-fill: #ff4444; -fx-font-weight: bold; -fx-font-size: 13px; -fx-alignment: CENTER;" :
-                                "-fx-text-fill: #44ff44; -fx-font-weight: bold; -fx-font-size: 13px; -fx-alignment: CENTER;");
+                                "-fx-text-fill: #ff4444; -fx-font-weight: bold; -fx-font-size: 13px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;" :
+                                "-fx-text-fill: #44ff44; -fx-font-weight: bold; -fx-font-size: 13px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                     }
                 }
             });
 
-            // ACTIONS COLUMN
+// ACTIONS COLUMN
             TableColumn<JsonObject, Void> colActions = new TableColumn<>("ACTIONS");
             colActions.setMinWidth(360);
             colActions.setMaxWidth(400);
@@ -8848,7 +8986,7 @@ public class ChromaFloodSystem extends Application {
                     delBtn.setMaxWidth(70);
                     delBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #880000, #550000); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 12; -fx-background-radius: 8; -fx-cursor: hand; -fx-font-size: 11;");
 
-                    // Hover effects
+                    // Hover effects remain the same...
                     banBtn.setOnMouseEntered(e -> banBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #ff6666, #ee2222); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 12; -fx-background-radius: 8; -fx-cursor: hand; -fx-font-size: 11;"));
                     banBtn.setOnMouseExited(e -> banBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #ff4444, #cc0000); -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 12; -fx-background-radius: 8; -fx-cursor: hand; -fx-font-size: 11;"));
 
@@ -8867,6 +9005,7 @@ public class ChromaFloodSystem extends Application {
                     super.updateItem(item, empty);
                     if (empty || getIndex() < 0) {
                         setGraphic(null);
+                        setStyle("");
                         return;
                     }
 
@@ -8875,19 +9014,42 @@ public class ChromaFloodSystem extends Application {
 
                     if ("admin".equalsIgnoreCase(username)) {
                         setGraphic(null);
+                        setStyle("");
                         return;
                     }
 
                     boolean banned = user.get("banned").getAsBoolean();
                     banBtn.setText(banned ? "Unban" : "Ban");
-                    banBtn.setOnAction(e -> toggleBanUser(username, !banned, userManagementTable));
-                    resetPicBtn.setOnAction(e -> resetUserProfilePicture(username, userManagementTable));
-                    delLbBtn.setOnAction(e -> deleteUserLeaderboard(username, userManagementTable));
-                    delBtn.setOnAction(e -> deleteUser(username, userManagementTable));
+
+                    // FIXED: Add modal check to all button actions
+                    banBtn.setOnAction(e -> {
+                        if (isModalDialogOpen) return;
+                        isModalDialogOpen = true;
+                        toggleBanUser(username, !banned, userManagementTable);
+                    });
+
+                    resetPicBtn.setOnAction(e -> {
+                        if (isModalDialogOpen) return;
+                        isModalDialogOpen = true;
+                        resetUserProfilePicture(username, userManagementTable);
+                    });
+
+                    delLbBtn.setOnAction(e -> {
+                        if (isModalDialogOpen) return;
+                        isModalDialogOpen = true;
+                        deleteUserLeaderboard(username, userManagementTable);
+                    });
+
+                    delBtn.setOnAction(e -> {
+                        if (isModalDialogOpen) return;
+                        isModalDialogOpen = true;
+                        deleteUser(username, userManagementTable);
+                    });
 
                     HBox box = new HBox(6, banBtn, resetPicBtn, delLbBtn, delBtn);
                     box.setAlignment(Pos.CENTER);
                     setGraphic(box);
+                    setStyle("-fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                 }
             });
 
@@ -9114,6 +9276,7 @@ public class ChromaFloodSystem extends Application {
                                             "They may have changed their username or been deleted.\n\n" +
                                             "Refreshing the list..."
                             );
+                            isModalDialogOpen = false;
 
                             // Refresh the appropriate table
                             if (table == userManagementTable) {
@@ -9132,6 +9295,7 @@ public class ChromaFloodSystem extends Application {
                 Platform.runLater(() -> {
                     showCustomErrorDialog("Connection Error",
                             "Failed to verify user existence: " + e.getMessage());
+                    isModalDialogOpen = false;
                 });
             }
         });
@@ -9141,9 +9305,12 @@ public class ChromaFloodSystem extends Application {
         // Validate username exists before showing modal
         validateUsernameBeforeAction(username, () -> {
             Platform.runLater(() -> {
-                // Create modal overlay
+                // Create modal overlay with rounded corners to match dialog
                 StackPane modalOverlay = new StackPane();
-                modalOverlay.setStyle("-fx-background-color: rgba(0, 0, 0, 0.7);");
+                modalOverlay.setStyle(
+                        "-fx-background-color: rgba(0, 0, 0, 0.7);" +
+                                "-fx-background-radius: 20;"  // Match user management dialog radius
+                );
                 modalOverlay.setPrefSize(userManagementStage.getWidth(), userManagementStage.getHeight());
 
                 // Dialog container
@@ -9275,13 +9442,16 @@ public class ChromaFloodSystem extends Application {
 
                 if (!(rootParent instanceof StackPane)) {
                     System.err.println("Root is not a StackPane, cannot show modal dialog");
+                    isModalDialogOpen = false; // ✅ FIXED: Reset flag on early return
                     return;
                 }
 
                 StackPane rootPane = (StackPane) rootParent;
 
-                // Close modal handler
-                Runnable closeModal = () -> rootPane.getChildren().remove(modalOverlay);
+                Runnable closeModal = () -> {
+                    rootPane.getChildren().remove(modalOverlay);
+                    isModalDialogOpen = false; // Reset flag
+                };
 
                 cancelBtn.setOnAction(e -> closeModal.run());
 
@@ -9301,9 +9471,10 @@ public class ChromaFloodSystem extends Application {
                             }
 
                             if (defaultPicBytes == null) {
-                                Platform.runLater(() ->
-                                        showCustomErrorDialog("Reset Failed", "Failed to load default profile picture.")
-                                );
+                                Platform.runLater(() -> {
+                                    showCustomErrorDialog("Reset Failed", "Failed to load default profile picture.");
+                                    isModalDialogOpen = false; // ✅ FIXED: Reset flag after error dialog
+                                });
                                 return;
                             }
 
@@ -9377,24 +9548,27 @@ public class ChromaFloodSystem extends Application {
                                             "Profile Picture Reset",
                                             "Profile picture for \"" + username + "\" has been reset to default."
                                     );
+                                    isModalDialogOpen = false; // ✅ FIXED: Reset flag after success dialog
                                 });
                             } else {
-                                Platform.runLater(() ->
-                                        showCustomErrorDialog(
-                                                "Reset Failed",
-                                                "Failed to reset profile picture:\n" + resp.body()
-                                        )
-                                );
+                                Platform.runLater(() -> {
+                                    showCustomErrorDialog(
+                                            "Reset Failed",
+                                            "Failed to reset profile picture:\n" + resp.body()
+                                    );
+                                    isModalDialogOpen = false; // ✅ FIXED: Reset flag after error dialog
+                                });
                             }
 
                         } catch (Exception ex) {
                             ex.printStackTrace();
-                            Platform.runLater(() ->
-                                    showCustomErrorDialog(
-                                            "Reset Failed",
-                                            "Error resetting profile picture:\n" + ex.getMessage()
-                                    )
-                            );
+                            Platform.runLater(() -> {
+                                showCustomErrorDialog(
+                                        "Reset Failed",
+                                        "Error resetting profile picture:\n" + ex.getMessage()
+                                );
+                                isModalDialogOpen = false; // ✅ FIXED: Reset flag after error dialog
+                            });
                         }
                     });
                 });
@@ -9428,12 +9602,12 @@ public class ChromaFloodSystem extends Application {
     private void toggleBanUser(String username, boolean ban, TableView<JsonObject> table) {
         if (username.equalsIgnoreCase("admin")) {
             showCustomErrorDialog("Cannot Ban Admin", "You cannot ban the admin account!");
+            isModalDialogOpen = false;
             return;
         }
 
         // Validate username exists before proceeding
         validateUsernameBeforeAction(username, () -> {
-            // Run on JavaFX thread since we're showing dialogs
             Platform.runLater(() -> {
                 if (ban) {
                     showBanReasonDialog(username, table);
@@ -9452,6 +9626,8 @@ public class ChromaFloodSystem extends Application {
 
                     if (confirmed) {
                         executeBanAction(username, false, null, table);
+                    } else {
+                        isModalDialogOpen = false; // Reset if cancelled
                     }
                 }
             });
@@ -9601,7 +9777,10 @@ public class ChromaFloodSystem extends Application {
         StackPane rootPane = (StackPane) rootParent;
 
         // Close modal handler
-        Runnable closeModal = () -> rootPane.getChildren().remove(modalOverlay);
+        Runnable closeModal = () -> {
+            rootPane.getChildren().remove(modalOverlay);
+            isModalDialogOpen = false; // Reset flag
+        };
 
         cancelBtn.setOnAction(e -> closeModal.run());
 
@@ -9628,6 +9807,8 @@ public class ChromaFloodSystem extends Application {
 
             if (confirmed) {
                 executeBanAction(username, true, reason, table);
+            } else {
+                isModalDialogOpen = false; // Reset if user cancels confirmation
             }
         });
 
@@ -9739,11 +9920,13 @@ public class ChromaFloodSystem extends Application {
                     } else {
                         new Alert(Alert.AlertType.ERROR,
                                 "Failed (" + resp.statusCode() + "):\n" + resp.body()).show();
+                        isModalDialogOpen = false;
                     }
                 });
             } catch (Exception ex) {
                 Platform.runLater(() -> new Alert(Alert.AlertType.ERROR,
                         "Error: " + ex.getMessage()).show());
+                isModalDialogOpen = false;
             }
         });
     }
@@ -9825,6 +10008,7 @@ public class ChromaFloodSystem extends Application {
     private void deleteUser(String username, TableView<JsonObject> table) {
         if (username.equalsIgnoreCase("admin")) {
             new Alert(AlertType.ERROR, "Cannot delete the admin account!").show();
+            isModalDialogOpen = false;
             return;
         }
 
@@ -9845,9 +10029,10 @@ public class ChromaFloodSystem extends Application {
                         "Cancel"
                 );
 
-                if (!confirmed) return;
-
-                System.out.println("[ADMIN] Starting deletion of user: " + username);
+                if (!confirmed) {
+                    isModalDialogOpen = false; // Reset if cancelled
+                    return;
+                }
 
                 executor.submit(() -> {
                     try {
@@ -9881,15 +10066,14 @@ public class ChromaFloodSystem extends Application {
                                                 "All associated data has been erased from the system."
                                 );
 
-                                // Remove from table
+                                isModalDialogOpen = false;
+
                                 table.getItems().removeIf(user ->
                                         user.get("username").getAsString().equals(username));
-
-                                // Optional: refresh the whole list from server (extra safe)
                                 refreshUserList(table);
-
                             } else {
                                 new Alert(AlertType.ERROR, "Delete failed: " + profResp.statusCode()).show();
+                                isModalDialogOpen = false;
                             }
                         });
 
@@ -10056,6 +10240,7 @@ public class ChromaFloodSystem extends Application {
             bgAnim.stop();
             iconPulse.stop();
             dialogStage.close();
+            isModalDialogOpen = false;
         });
 
         // Confirm button
@@ -10163,6 +10348,10 @@ public class ChromaFloodSystem extends Application {
 
         dialogStage.showAndWait();
 
+        if (!result[0]) {
+            isModalDialogOpen = false;
+        }
+
         return result[0];
     }
 
@@ -10170,10 +10359,10 @@ public class ChromaFloodSystem extends Application {
     private void deleteUserLeaderboard(String username, TableView<JsonObject> table) {
         if (username.equalsIgnoreCase("admin")) {
             new Alert(AlertType.ERROR, "Cannot reset admin progress!").show();
+            isModalDialogOpen = false; // Reset flag
             return;
         }
 
-        // Validate username exists before showing confirmation
         validateUsernameBeforeAction(username, () -> {
             Platform.runLater(() -> {
                 boolean confirmed = showCustomConfirmDialog(
@@ -10187,9 +10376,10 @@ public class ChromaFloodSystem extends Application {
                         "Cancel"
                 );
 
-                if (!confirmed) return;
-
-                System.out.println("[ADMIN] Resetting progress for user: " + username);
+                if (!confirmed) {
+                    isModalDialogOpen = false; // Reset if cancelled
+                    return;
+                }
 
                 executor.submit(() -> {
                     try {
@@ -10221,6 +10411,7 @@ public class ChromaFloodSystem extends Application {
                             if (lbResp.statusCode() == 204 && levelResp.statusCode() == 204) {
                                 showCustomSuccessDialog("Progress Reset Complete",
                                         "Successfully reset progress for\n\"" + username + "\"!");
+                                isModalDialogOpen = false;
 
                                 // Update table locally
                                 table.getItems().forEach(user -> {
@@ -10239,6 +10430,7 @@ public class ChromaFloodSystem extends Application {
                                 }
                             } else {
                                 new Alert(AlertType.ERROR, "Reset failed!").show();
+                                isModalDialogOpen = false;
                             }
                         });
 
@@ -10402,9 +10594,9 @@ public class ChromaFloodSystem extends Application {
                         "unlocked_levels", levelsStr,
                         "effects_muted", isEffectsMuted,
                         "music_muted", isMusicMuted,
-                        "volume", audioVolume
+                        "volume", audioVolume,
+                        "sprite_visible", isSpriteVisible
                 );
-
                 String json = gson.toJson(payload);
 
                 HttpRequest request = HttpRequest.newBuilder()
@@ -10552,18 +10744,14 @@ public class ChromaFloodSystem extends Application {
                         setStyle("");
                     } else {
                         setText(String.valueOf(rank));
-                        String color = switch (rank) {
-                            case 1 -> "#FFD700";
-                            case 2 -> "#C0C0C0";
-                            case 3 -> "#CD7F32";
-                            default -> "#FFFFFF";
-                        };
-                        setStyle("-fx-text-fill: " + color + "; -fx-font-weight: bold; -fx-font-size: 14px; -fx-alignment: CENTER;");
+                        // Added #FFFFFF for white text color
+                        setStyle("-fx-text-fill: #FFFFFF; -fx-font-weight: bold; -fx-font-size: 14px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                     }
                 }
             });
 
-            // PLAYER COLUMN
+
+            // PLAYER COLUMN with enhanced profile pictures
             TableColumn<PlayerData, PlayerData> colPlayer = new TableColumn<>("PLAYER");
             colPlayer.setMinWidth(200);
             colPlayer.setMaxWidth(250);
@@ -10571,25 +10759,54 @@ public class ChromaFloodSystem extends Application {
             colPlayer.setSortable(false);
             colPlayer.setCellValueFactory(param -> new SimpleObjectProperty<>(param.getValue()));
             colPlayer.setCellFactory(col -> new TableCell<PlayerData, PlayerData>() {
-                private final Circle backgroundCircle = new Circle(15);  // ADD THIS
+                private final Circle backgroundCircle = new Circle(18);
                 private final ImageView profilePic = new ImageView();
                 private final Label nameLabel = new Label();
-                private final StackPane picContainer = new StackPane();  // ADD THIS
-                private final HBox container = new HBox(10, picContainer, nameLabel);  // CHANGE THIS
+                private final StackPane picContainer = new StackPane();
+                private final HBox container = new HBox(12, picContainer, nameLabel);
 
                 {
-                    backgroundCircle.setEffect(new Glow(0.3));
+                    // Background circle - solid dark with slight gradient feel
+                    backgroundCircle.setFill(Color.rgb(30, 35, 45));
+                    backgroundCircle.setStroke(Color.rgb(60, 70, 85));
+                    backgroundCircle.setStrokeWidth(1.5);
 
-                    profilePic.setFitWidth(30);
-                    profilePic.setFitHeight(30);
-                    profilePic.setClip(new Circle(15, 15, 15));
+                    // Profile picture - larger and higher quality
+                    profilePic.setFitWidth(36);
+                    profilePic.setFitHeight(36);
+                    profilePic.setPreserveRatio(true);
+                    profilePic.setSmooth(true);
 
-                    // Stack background behind image
-                    picContainer.getChildren().addAll(backgroundCircle, profilePic);
+                    // Circular clip for profile pic
+                    Circle clip = new Circle(18, 18, 18);
+                    profilePic.setClip(clip);
+
+                    // Add subtle border to profile pic
+                    Circle picBorder = new Circle(18);
+                    picBorder.setFill(Color.TRANSPARENT);
+                    picBorder.setStroke(Color.rgb(255, 255, 255, 0.3));
+                    picBorder.setStrokeWidth(1);
+
+                    // Stack all elements
+                    picContainer.getChildren().addAll(backgroundCircle, profilePic, picBorder);
                     picContainer.setAlignment(Pos.CENTER);
 
                     container.setAlignment(Pos.CENTER_LEFT);
                     nameLabel.setStyle("-fx-text-fill: #FFFFFF; -fx-font-size: 14px; -fx-font-weight: bold;");
+
+                    container.setOnMouseEntered(e -> {
+                        ScaleTransition st = new ScaleTransition(Duration.millis(150), picContainer);
+                        st.setToX(1.15);
+                        st.setToY(1.15);
+                        st.play();
+                    });
+
+                    container.setOnMouseExited(e -> {
+                        ScaleTransition st = new ScaleTransition(Duration.millis(150), picContainer);
+                        st.setToX(1.0);
+                        st.setToY(1.0);
+                        st.play();
+                    });
                 }
 
                 @Override
@@ -10598,25 +10815,51 @@ public class ChromaFloodSystem extends Application {
                     if (empty || player == null) {
                         setGraphic(null);
                     } else {
+                        // Load high-quality profile image
                         Image img = getProfileImageForUser(player.username);
                         profilePic.setImage(img != null ? img : new Image("file:resources/images/default_profile.png"));
+
                         nameLabel.setText(player.username);
 
                         int rank = leaderboardTable.getItems().indexOf(player) + 1;
 
-                        // Solid dark gray background for all ranks
-                        backgroundCircle.setFill(Color.rgb(40, 45, 55, 0.8));
+                        // Rank-based styling
+                        String nameColor;
+                        Color glowColor;
+                        Color bgColor;
 
-                        String color = switch (rank) {
-                            case 1 -> "#FFD700";
-                            case 2 -> "#C0C0C0";
-                            case 3 -> "#CD7F32";
-                            default -> "#FFFFFF";
-                        };
-                        nameLabel.setStyle("-fx-text-fill: " + color + "; -fx-font-size: 14px; -fx-font-weight: bold;");
+                        switch (rank) {
+                            case 1: // Gold
+                                nameColor = "#FFD700";
+                                glowColor = Color.rgb(255, 215, 0, 0.8);
+                                bgColor = Color.rgb(60, 50, 20);
+                                backgroundCircle.setStroke(Color.rgb(255, 215, 0, 0.6));
+                                break;
+                            case 2: // Silver
+                                nameColor = "#C0C0C0";
+                                glowColor = Color.rgb(192, 192, 192, 0.8);
+                                bgColor = Color.rgb(50, 50, 55);
+                                backgroundCircle.setStroke(Color.rgb(192, 192, 192, 0.6));
+                                break;
+                            case 3: // Bronze
+                                nameColor = "#CD7F32";
+                                glowColor = Color.rgb(205, 127, 50, 0.8);
+                                bgColor = Color.rgb(50, 40, 30);
+                                backgroundCircle.setStroke(Color.rgb(205, 127, 50, 0.6));
+                                break;
+                            default:
+                                nameColor = "#FFFFFF";
+                                glowColor = Color.rgb(0, 217, 255, 0.6);
+                                bgColor = Color.rgb(30, 35, 45);
+                                backgroundCircle.setStroke(Color.rgb(60, 70, 85));
+                                break;
+                        }
+
+
+                        nameLabel.setStyle("-fx-text-fill: " + nameColor + "; -fx-font-size: 14px; -fx-font-weight: bold;");
 
                         setGraphic(container);
-                        setStyle("-fx-alignment: CENTER_LEFT;");
+                        setStyle("-fx-alignment: CENTER_LEFT; -fx-padding: 20 10 10 10;");
                     }
                 }
             });
@@ -10637,7 +10880,7 @@ public class ChromaFloodSystem extends Application {
                         setStyle("");
                     } else {
                         setText("Level " + level);
-                        setStyle("-fx-text-fill: #FFFFFF; -fx-font-size: 14px; -fx-alignment: CENTER;");
+                        setStyle("-fx-text-fill: #FFFFFF; -fx-font-size: 14px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                     }
                 }
             });
@@ -10658,7 +10901,7 @@ public class ChromaFloodSystem extends Application {
                         setStyle("");
                     } else {
                         setText(String.format("%.3f s", time));
-                        setStyle("-fx-text-fill: #88FF88; -fx-font-size: 14px; -fx-alignment: CENTER;");
+                        setStyle("-fx-text-fill: #88FF88; -fx-font-size: 14px; -fx-alignment: CENTER; -fx-padding: 20 10 10 10;");
                     }
                 }
             });
@@ -10786,7 +11029,7 @@ public class ChromaFloodSystem extends Application {
 
             try {
                 String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + URLEncoder.encode(username, StandardCharsets.UTF_8)
-                        + "&select=profile_picture,profile_picture_bytes";
+                        + "&select=profile_picture,profile_picture_bytes,unlocked_levels,effects_muted,music_muted,volume,sprite_visible";
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(url))
@@ -10823,7 +11066,7 @@ public class ChromaFloodSystem extends Application {
     }
 
     // Keep your existing refreshLeaderboardDisplay method (the one that fills leaderboardData and rebuilds the grid)
-    private void refreshLeaderboardData() {
+    public void refreshLeaderboardData() {
         refreshLeaderboardData(null);
     }
 
@@ -10939,36 +11182,6 @@ public class ChromaFloodSystem extends Application {
         });
     }
 
-    // Helper method to check if user is banned
-    private boolean isUserBanned(String username) {
-        try {
-            String url = USERS_TABLE + "?username=eq." + username + "&select=banned";
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("apikey", SUPABASE_ANON_KEY)
-                    .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
-                    .timeout(java.time.Duration.ofSeconds(10))
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                Type type = new TypeToken<List<Map<String, Object>>>() {}.getType();
-                List<Map<String, Object>> result = gson.fromJson(response.body(), type);
-
-                if (result != null && !result.isEmpty()) {
-                    Object isBannedObj = result.get(0).get("banned"); // Changed from "is_banned" to "banned"
-                    return isBannedObj != null && (Boolean) isBannedObj;
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("Error checking ban status for " + username + ": " + e.getMessage());
-        }
-
-        return false; // Default to not banned if check fails
-    }
-
     private Set<String> fetchAllBannedUsers() {
         try {
             String url = USERS_TABLE + "?banned=eq.true&select=username";
@@ -10998,7 +11211,785 @@ public class ChromaFloodSystem extends Application {
         return new HashSet<>(); // Return empty set on failure
     }
 
+    // Tutorial step data
+    private static class TutorialStep {
+        String title;
+        String description;
+        String highlightElement; // "target", "palette", "grid", "moves", null for no highlight
+
+        TutorialStep(String title, String description, String highlightElement) {
+            this.title = title;
+            this.description = description;
+            this.highlightElement = highlightElement;
+        }
+    }
+
+    private final TutorialStep[] tutorialSteps = {
+            new TutorialStep(
+                    "Welcome to Chroma Flood!",
+                    "Your goal is to flood the entire grid with the TARGET COLOR.\n\nLet's learn how to play!",
+                    null
+            ),
+            new TutorialStep(
+                    "Target Color",
+                    "Each level has a TARGET COLOR shown at the top.\n\nYou must flood all tiles to match this color to win the level!",
+                    null
+            ),
+            new TutorialStep(
+                    "Color Palette",
+                    "Select a color from the palette by clicking on it.\n\nPress the number keys (1-4) for quick selection!",
+                    "palette"
+            ),
+            new TutorialStep(
+                    "Flood Fill Demo",
+                    "Watch how clicking changes ALL CONNECTED tiles of the same color!",
+                    "grid_demo"
+            ),
+            new TutorialStep(
+                    "Strategy Tips",
+                    "Pro tips from experienced players:\n\n" +
+                            "• START FROM A CORNER and work across the board\n" +
+                            "• CONNECT SCATTERED REGIONS before changing them\n" +
+                            "• Choose colors that SPREAD DEEPEST into unflooded territory\n" +
+                            "• Plan ahead - don't take the first move that comes to mind!",
+                    "grid"
+            ),
+            new TutorialStep(
+                    "Moves Counter",
+                    "You have LIMITED MOVES to complete each level.\n\nUse them wisely to reach the target color!",
+                    "moves"
+            ),
+            new TutorialStep(
+                    "Ready to Play!",
+                    "You're all set!\n\n✓ Pick a color from palette\n✓ Click tiles to flood fill\n✓ Expand your region each move\n✓ Match the target color\n✓ Beat all 10 levels!\n\nGood luck!",
+                    null
+            )
+    };
+
+    // Main method to show tutorial
+    private void showTutorial() {
+        showTutorial(false); // Default to automatic mode
+    }
+
+    // Overloaded method that accepts a boolean flag
+    private void showTutorial(boolean isManualOpen) {
+        tutorialActive = true;
+        currentTutorialStep = 0;
+        boolean wasManuallyOpened = isManualOpen;
+
+        tutorialStage = new Stage();
+        tutorialStage.initOwner(primaryStage);
+        tutorialStage.initModality(Modality.WINDOW_MODAL);
+        tutorialStage.initStyle(StageStyle.TRANSPARENT);
+        tutorialStage.setUserData(wasManuallyOpened);
+
+        // Create root container
+        StackPane tutorialRoot = new StackPane();
+        tutorialRoot.setStyle("-fx-background-color: transparent;");
+
+        // Semi-transparent dark overlay
+        tutorialOverlay = new Rectangle();
+        tutorialOverlay.setFill(Color.rgb(0, 0, 0, 0.85));
+        tutorialOverlay.widthProperty().bind(tutorialStage.widthProperty());
+        tutorialOverlay.heightProperty().bind(tutorialStage.heightProperty());
+
+        // Tutorial card container - landscape oriented
+        tutorialCard = new VBox(15);
+        tutorialCard.setAlignment(Pos.CENTER);
+        tutorialCard.setPadding(new Insets(40, 60, 40, 60));
+        tutorialCard.setMaxWidth(850);
+        tutorialCard.setMinHeight(650);
+        tutorialCard.setMaxHeight(650);
+        tutorialCard.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #0a0e1a 0%, #1a1f35 100%);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-border-color: #00FFFF;" +
+                        "-fx-border-width: 3;" +
+                        "-fx-border-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(0,255,255,0.6), 25, 0.5, 0, 0);"
+        );
+
+        tutorialRoot.getChildren().addAll(tutorialOverlay, tutorialCard);
+
+        Scene tutorialScene = new Scene(tutorialRoot);
+        tutorialScene.setFill(Color.TRANSPARENT);
+        tutorialStage.setScene(tutorialScene);
+
+        // Size and position
+        tutorialStage.setWidth(primaryStage.getWidth());
+        tutorialStage.setHeight(primaryStage.getHeight());
+        tutorialStage.setX(primaryStage.getX());
+        tutorialStage.setY(primaryStage.getY());
+
+        updateTutorialStep();
+        tutorialStage.show();
+    }
+
+    // Update tutorial content based on current step
+    private void updateTutorialStep() {
+        // Stop any running animations from previous step
+        if (tutorialCard.getUserData() instanceof Timeline) {
+            Timeline previousAnimation = (Timeline) tutorialCard.getUserData();
+            previousAnimation.stop();
+            tutorialCard.setUserData(null);
+        }
+
+        tutorialCard.getChildren().clear();
+
+        TutorialStep step = tutorialSteps[currentTutorialStep];
+
+        // Step indicator
+        Label stepIndicator = new Label("Step " + (currentTutorialStep + 1) + " of " + tutorialSteps.length);
+        stepIndicator.setStyle(
+                "-fx-text-fill: #00FFFF;" +
+                        "-fx-font-size: 16;" +
+                        "-fx-font-weight: bold;"
+        );
+
+        // Title - smaller for landscape
+        Label title = new Label(step.title);
+        title.setStyle(
+                "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-font-size: 26;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-effect: dropshadow(gaussian, #00FFFF, 8, 0.5, 0, 0);"
+        );
+        title.setWrapText(true);
+        title.setTextAlignment(javafx.scene.text.TextAlignment.CENTER);
+        title.setAlignment(Pos.CENTER);
+        title.setMaxWidth(700);
+
+        // Description - smaller for landscape
+        Label description = new Label(step.description);
+        description.setStyle(
+                "-fx-text-fill: #CCCCCC;" +
+                        "-fx-font-size: 15;" +
+                        "-fx-line-spacing: 4;"
+        );
+        description.setWrapText(true);
+        description.setTextAlignment(javafx.scene.text.TextAlignment.CENTER);
+        description.setAlignment(Pos.CENTER);
+        description.setMaxWidth(700);
+
+        // Visual indicator for what's being highlighted - smaller for landscape
+        VBox visualBox = new VBox(10);
+        visualBox.setAlignment(Pos.CENTER);
+        visualBox.setPadding(new Insets(15, 0, 15, 0));
+
+        if (step.highlightElement != null) {
+            switch (step.highlightElement) {
+                case "target":
+                    Circle targetDemo = new Circle(25, targetColor.getFxColor());
+                    DropShadow targetGlow = new DropShadow();
+                    targetGlow.setColor(targetColor.getFxColor());
+                    targetGlow.setRadius(25);
+                    targetGlow.setSpread(0.8);
+                    targetDemo.setEffect(targetGlow);
+
+                    // Pulse animation
+                    ScaleTransition pulse = new ScaleTransition(Duration.millis(1000), targetDemo);
+                    pulse.setFromX(1.0);
+                    pulse.setFromY(1.0);
+                    pulse.setToX(1.3);
+                    pulse.setToY(1.3);
+                    pulse.setAutoReverse(true);
+                    pulse.setCycleCount(Animation.INDEFINITE);
+                    pulse.play();
+
+                    visualBox.getChildren().add(targetDemo);
+                    break;
+
+                case "palette":
+                    HBox paletteDemo = new HBox(12);
+                    paletteDemo.setAlignment(Pos.CENTER);
+
+                    for (ColorType color : palette) {
+                        Circle orb = new Circle(20, color.getFxColor());
+                        orb.setEffect(new Glow(0.8));
+
+                        ScaleTransition orbPulse = new ScaleTransition(Duration.millis(800), orb);
+                        orbPulse.setFromX(1.0);
+                        orbPulse.setFromY(1.0);
+                        orbPulse.setToX(1.2);
+                        orbPulse.setToY(1.2);
+                        orbPulse.setAutoReverse(true);
+                        orbPulse.setCycleCount(Animation.INDEFINITE);
+                        orbPulse.setDelay(Duration.millis(palette.indexOf(color) * 150));
+                        orbPulse.play();
+
+                        paletteDemo.getChildren().add(orb);
+                    }
+                    visualBox.getChildren().add(paletteDemo);
+                    break;
+
+                case "grid_demo":
+                    // Animated flood fill demonstration - Complete Level 1 solution with BFS spreading
+                    VBox demoContainer = new VBox(15);
+                    demoContainer.setAlignment(Pos.CENTER);
+
+                    // Demo grid - 10x8 to match actual game
+                    GridPane demoGrid = new GridPane();
+                    demoGrid.setAlignment(Pos.CENTER);
+                    demoGrid.setHgap(2);
+                    demoGrid.setVgap(2);
+
+                    // Level 1 patterns - showing all 5 states (initial + 4 moves)
+                    char[][][] levelStates = {
+                            // Initial state
+                            {
+                                    {'G', 'G', 'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G'},
+                                    {'Y', 'G', 'G', 'B', 'B', 'B', 'B', 'B', 'Y', 'Y'},
+                                    {'Y', 'G', 'G', 'B', 'R', 'R', 'R', 'B', 'G', 'Y'},
+                                    {'Y', 'Y', 'G', 'B', 'G', 'R', 'G', 'B', 'G', 'Y'},
+                                    {'Y', 'B', 'B', 'B', 'R', 'B', 'G', 'B', 'G', 'Y'},
+                                    {'Y', 'Y', 'Y', 'G', 'G', 'R', 'B', 'B', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'Y', 'Y', 'Y'}
+                            },
+                            // After 1st move (B -> R at center)
+                            {
+                                    {'G', 'G', 'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G'},
+                                    {'Y', 'G', 'G', 'B', 'B', 'B', 'B', 'B', 'Y', 'Y'},
+                                    {'Y', 'G', 'G', 'B', 'R', 'R', 'R', 'B', 'G', 'Y'},
+                                    {'Y', 'Y', 'G', 'B', 'G', 'R', 'G', 'B', 'G', 'Y'},
+                                    {'Y', 'B', 'B', 'B', 'R', 'R', 'G', 'B', 'G', 'Y'},
+                                    {'Y', 'Y', 'Y', 'G', 'G', 'R', 'B', 'B', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'Y', 'Y', 'Y'}
+                            },
+                            // After 2nd move (R -> G at center)
+                            {
+                                    {'G', 'G', 'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G'},
+                                    {'Y', 'G', 'G', 'B', 'B', 'B', 'B', 'B', 'Y', 'Y'},
+                                    {'Y', 'G', 'G', 'B', 'G', 'G', 'G', 'B', 'G', 'Y'},
+                                    {'Y', 'Y', 'G', 'B', 'G', 'G', 'G', 'B', 'G', 'Y'},
+                                    {'Y', 'B', 'B', 'B', 'G', 'G', 'G', 'B', 'G', 'Y'},
+                                    {'Y', 'Y', 'Y', 'G', 'G', 'G', 'B', 'B', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'Y', 'Y', 'Y'}
+                            },
+                            // After 3rd move (B -> G at edges)
+                            {
+                                    {'G', 'G', 'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G'},
+                                    {'Y', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'Y', 'Y'},
+                                    {'Y', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'Y'},
+                                    {'Y', 'Y', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'Y'},
+                                    {'Y', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'Y'},
+                                    {'Y', 'Y', 'Y', 'G', 'G', 'G', 'G', 'G', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'G', 'G', 'G', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'G', 'G', 'Y', 'Y', 'Y'}
+                            },
+                            // After 4th move (G -> Y, complete!)
+                            {
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'},
+                                    {'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'}
+                            }
+                    };
+
+                    // Click positions for each move (row, col)
+                    int[][] clickPositions = {
+                            {4, 5},  // Move 1: Click at center R tile
+                            {2, 4},  // Move 2: Click at center (now R, will become G)
+                            {1, 3},  // Move 3: Click at B tile to flood to G
+                            {1, 1}   // Move 4: Click at G tile to flood to Y
+                    };
+
+                    Rectangle[][] demoTiles = new Rectangle[8][10];
+
+                    // Create tiles for initial state
+                    for (int i = 0; i < 8; i++) {
+                        for (int j = 0; j < 10; j++) {
+                            Rectangle tile = new Rectangle(20, 20);
+                            tile.setFill(charToColor(levelStates[0][i][j]).getFxColor());
+                            tile.setArcWidth(4);
+                            tile.setArcHeight(4);
+                            tile.setStroke(Color.rgb(255, 255, 255, 0.2));
+                            tile.setStrokeWidth(1);
+                            demoTiles[i][j] = tile;
+                            demoGrid.add(tile, j, i);
+                        }
+                    }
+
+                    // Status labels
+                    Label movesLabel = new Label("Moves: 4");
+                    movesLabel.setStyle(
+                            "-fx-text-fill: #FFFFFF;" +
+                                    "-fx-font-family: 'Arial Black';" +
+                                    "-fx-font-size: 16;" +
+                                    "-fx-font-weight: bold;" +
+                                    "-fx-effect: dropshadow(gaussian, #FF4466, 8, 0.6, 0, 0);"
+                    );
+
+                    Label actionLabel = new Label("Watch the solution!");
+                    actionLabel.setStyle(
+                            "-fx-text-fill: #00FFFF;" +
+                                    "-fx-font-size: 12;" +
+                                    "-fx-font-weight: bold;"
+                    );
+
+                    // Target color indicator
+                    HBox targetColorBox = new HBox(8);
+                    targetColorBox.setAlignment(Pos.CENTER);
+                    Label targetLabel = new Label("Target:");
+                    targetLabel.setStyle("-fx-text-fill: #CCCCCC; -fx-font-size: 11;");
+                    Circle targetColorCircle = new Circle(10, ColorType.YELLOW.getFxColor());
+                    targetColorCircle.setEffect(new Glow(0.8));
+                    targetColorBox.getChildren().addAll(targetLabel, targetColorCircle);
+
+                    // Selected color indicator
+                    HBox selectedColorBox = new HBox(8);
+                    selectedColorBox.setAlignment(Pos.CENTER);
+                    Label selectedLabel = new Label("Selected:");
+                    selectedLabel.setStyle("-fx-text-fill: #CCCCCC; -fx-font-size: 11;");
+                    Circle selectedColorCircle = new Circle(10, ColorType.RED.getFxColor());
+                    selectedColorCircle.setEffect(new Glow(0.8));
+                    selectedColorBox.getChildren().addAll(selectedLabel, selectedColorCircle);
+
+                    HBox statusRow = new HBox(20, targetColorBox, selectedColorBox);
+                    statusRow.setAlignment(Pos.CENTER);
+
+                    demoContainer.getChildren().addAll(movesLabel, statusRow, demoGrid, actionLabel);
+                    visualBox.getChildren().add(demoContainer);
+
+                    // Helper method to perform BFS and get tiles in distance order from source
+                    class BFSHelper {
+                        List<int[]> getTilesInBFSOrder(int startRow, int startCol, char[][] prevState, char[][] nextState) {
+                            List<int[]> result = new ArrayList<>();
+                            Set<String> visited = new HashSet<>();
+                            Queue<int[]> queue = new LinkedList<>();
+
+                            char originalColor = prevState[startRow][startCol];
+
+                            // Add starting tile
+                            queue.add(new int[]{startRow, startCol});
+                            visited.add(startRow + "," + startCol);
+
+                            int[][] directions = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+
+                            // BFS traversal
+                            while (!queue.isEmpty()) {
+                                int[] pos = queue.poll();
+                                int row = pos[0];
+                                int col = pos[1];
+
+                                // Only add if this tile actually changed
+                                if (prevState[row][col] != nextState[row][col]) {
+                                    result.add(new int[]{row, col});
+                                }
+
+                                // Check adjacent tiles
+                                for (int[] dir : directions) {
+                                    int nr = row + dir[0];
+                                    int nc = col + dir[1];
+                                    String key = nr + "," + nc;
+
+                                    if (nr >= 0 && nr < 8 && nc >= 0 && nc < 10 &&
+                                            !visited.contains(key) &&
+                                            prevState[nr][nc] == originalColor) {
+                                        queue.add(new int[]{nr, nc});
+                                        visited.add(key);
+                                    }
+                                }
+                            }
+
+                            return result;
+                        }
+                    }
+
+                    BFSHelper bfsHelper = new BFSHelper();
+
+                    // Animate the complete solution
+                    Timeline demoAnimation = new Timeline();
+
+                    // Move descriptions
+                    String[] moveDescriptions = {
+                            "Move 1: Select RED, flood center!",
+                            "Move 2: Select GREEN, expand region!",
+                            "Move 3: Select GREEN, flood more!",
+                            "Move 4: Select YELLOW, complete! 🎉"
+                    };
+
+                    Color[] moveColors = {
+                            ColorType.RED.getFxColor(),
+                            ColorType.GREEN.getFxColor(),
+                            ColorType.GREEN.getFxColor(),
+                            ColorType.YELLOW.getFxColor()
+                    };
+
+                    double currentTime = 0.5; // Start after 0.5 seconds
+
+                    for (int move = 0; move < 4; move++) {
+                        final int moveIndex = move;
+                        final int movesLeft = 4 - move;
+                        final int clickRow = clickPositions[move][0];
+                        final int clickCol = clickPositions[move][1];
+
+                        // Highlight click position AND immediately deduct move
+                        demoAnimation.getKeyFrames().add(new KeyFrame(Duration.seconds(currentTime), e -> {
+                            actionLabel.setText(moveDescriptions[moveIndex]);
+                            selectedColorCircle.setFill(moveColors[moveIndex]);
+
+                            // IMMEDIATELY update moves counter (before spreading animation)
+                            movesLabel.setText("Moves: " + (movesLeft - 1));
+
+                            // Pulse the clicked tile
+                            Rectangle clickedTile = demoTiles[clickRow][clickCol];
+                            ScaleTransition clickPulse = new ScaleTransition(Duration.millis(300), clickedTile);
+                            clickPulse.setToX(1.3);
+                            clickPulse.setToY(1.3);
+                            clickPulse.setAutoReverse(true);
+                            clickPulse.setCycleCount(2);
+                            clickPulse.play();
+
+                            // Add glow
+                            clickedTile.setEffect(new Glow(1.0));
+                        }));
+
+                        currentTime += 0.5; // Wait before animating tiles
+
+                        // Get tiles in BFS order from click position
+                        char[][] prevState = levelStates[moveIndex];
+                        char[][] nextState = levelStates[moveIndex + 1];
+
+                        List<int[]> changedTiles = bfsHelper.getTilesInBFSOrder(clickRow, clickCol, prevState, nextState);
+
+                        // Animate each changed tile in BFS order (spreading outward)
+                        for (int idx = 0; idx < changedTiles.size(); idx++) {
+                            final int i = changedTiles.get(idx)[0];
+                            final int j = changedTiles.get(idx)[1];
+                            final char newColorChar = nextState[i][j];
+
+                            demoAnimation.getKeyFrames().add(new KeyFrame(
+                                    Duration.seconds(currentTime + idx * 0.05), // 50ms between tiles
+                                    e -> {
+                                        Rectangle tile = demoTiles[i][j];
+
+                                        // Change color
+                                        tile.setFill(charToColor(newColorChar).getFxColor());
+
+                                        // Scale animation
+                                        ScaleTransition scale = new ScaleTransition(Duration.millis(100), tile);
+                                        scale.setFromX(1.0);
+                                        scale.setFromY(1.0);
+                                        scale.setToX(1.4);
+                                        scale.setToY(1.4);
+                                        scale.setAutoReverse(true);
+                                        scale.setCycleCount(2);
+                                        scale.play();
+
+                                        // Glow effect
+                                        tile.setEffect(new Glow(0.8));
+
+                                        // Remove glow and highlight after animation
+                                        Timeline removeEffects = new Timeline(new KeyFrame(
+                                                Duration.millis(200),
+                                                evt -> {
+                                                    tile.setEffect(null);
+                                                }
+                                        ));
+                                        removeEffects.play();
+                                    }
+                            ));
+                        }
+
+                        currentTime += changedTiles.size() * 0.05 + 0.3; // Wait for all tiles + buffer
+
+                        // Check for completion message (only after move 4)
+                        if (move == 3) {
+                            demoAnimation.getKeyFrames().add(new KeyFrame(Duration.seconds(currentTime), e -> {
+                                actionLabel.setText("LEVEL COMPLETE! All tiles match target! 🎉");
+                                actionLabel.setStyle(
+                                        "-fx-text-fill: #00FF00;" +
+                                                "-fx-font-size: 12;" +
+                                                "-fx-font-weight: bold;"
+                                );
+                            }));
+                        }
+
+                        currentTime += 1.0; // Pause between moves
+                    }
+
+                    // Reset after completion
+                    demoAnimation.getKeyFrames().add(new KeyFrame(
+                            Duration.seconds(currentTime + 2),
+                            e -> {
+                                // Reset to initial state
+                                movesLabel.setText("Moves: 4");
+                                actionLabel.setText("Watch the solution!");
+                                actionLabel.setStyle(
+                                        "-fx-text-fill: #00FFFF;" +
+                                                "-fx-font-size: 12;" +
+                                                "-fx-font-weight: bold;"
+                                );
+                                selectedColorCircle.setFill(ColorType.RED.getFxColor());
+
+                                // Reset all tiles
+                                for (int i = 0; i < 8; i++) {
+                                    for (int j = 0; j < 10; j++) {
+                                        demoTiles[i][j].setFill(charToColor(levelStates[0][i][j]).getFxColor());
+                                        demoTiles[i][j].setStroke(Color.rgb(255, 255, 255, 0.2));
+                                        demoTiles[i][j].setStrokeWidth(1);
+                                        demoTiles[i][j].setEffect(null);
+                                    }
+                                }
+                            }
+                    ));
+
+                    demoAnimation.setCycleCount(Animation.INDEFINITE);
+                    demoAnimation.play();
+
+                    // Store animation reference to stop it when leaving this step
+                    tutorialCard.setUserData(demoAnimation);
+                    break;
+
+                case "grid":
+                    // Mini grid demonstration - smaller
+                    GridPane miniGrid = new GridPane();
+                    miniGrid.setAlignment(Pos.CENTER);
+                    miniGrid.setHgap(3);
+                    miniGrid.setVgap(3);
+
+                    for (int i = 0; i < 3; i++) {
+                        for (int j = 0; j < 3; j++) {
+                            Rectangle miniTile = new Rectangle(35, 35);
+                            miniTile.setArcWidth(8);
+                            miniTile.setArcHeight(8);
+
+                            if (i == 1 && j == 1) {
+                                miniTile.setFill(ColorType.BLUE.getFxColor());
+                                miniTile.setStroke(Color.WHITE);
+                                miniTile.setStrokeWidth(3);
+                                miniTile.setStrokeType(StrokeType.INSIDE);  // Draw stroke inside the bounds
+                                miniTile.setEffect(new Glow(1.0));
+
+                                // Pulse the center tile
+                                ScaleTransition tilePulse = new ScaleTransition(Duration.millis(600), miniTile);
+                                tilePulse.setFromX(1.0);
+                                tilePulse.setFromY(1.0);
+                                tilePulse.setToX(1.15);
+                                tilePulse.setToY(1.15);
+                                tilePulse.setAutoReverse(true);
+                                tilePulse.setCycleCount(Animation.INDEFINITE);
+                                tilePulse.play();
+                            } else {
+                                miniTile.setFill(ColorType.GREEN.getFxColor());
+                            }
+                            miniGrid.add(miniTile, j, i);
+                        }
+                    }
+                    visualBox.getChildren().add(miniGrid);
+                    break;
+
+                case "moves":
+                    Label movesDemo = new Label("Moves: 4");
+                    movesDemo.setStyle(
+                            "-fx-text-fill: #FFFFFF;" +
+                                    "-fx-font-family: 'Arial Black';" +
+                                    "-fx-font-size: 30;" +
+                                    "-fx-font-weight: bold;" +
+                                    "-fx-effect: dropshadow(gaussian, #FF4466, 10, 0.6, 0, 0);"
+                    );
+
+                    // Pulse animation
+                    ScaleTransition movesPulse = new ScaleTransition(Duration.millis(800), movesDemo);
+                    movesPulse.setFromX(1.0);
+                    movesPulse.setFromY(1.0);
+                    movesPulse.setToX(1.2);
+                    movesPulse.setToY(1.2);
+                    movesPulse.setAutoReverse(true);
+                    movesPulse.setCycleCount(Animation.INDEFINITE);
+                    movesPulse.play();
+
+                    visualBox.getChildren().add(movesDemo);
+                    break;
+            }
+        }
+
+        // Navigation buttons
+        HBox buttonBox = new HBox(20);
+        buttonBox.setAlignment(Pos.CENTER);
+        buttonBox.setPadding(new Insets(20, 0, 0, 0));
+
+        // Previous button (if not first step)
+        if (currentTutorialStep > 0) {
+            Button prevButton = createTutorialButton("← PREVIOUS", Color.rgb(100, 150, 255));
+            prevButton.setOnAction(e -> {
+                currentTutorialStep--;
+                updateTutorialStep();
+            });
+            buttonBox.getChildren().add(prevButton);
+        }
+
+        // Next/Finish button
+        boolean isLastStep = currentTutorialStep == tutorialSteps.length - 1;
+        Button nextButton = createTutorialButton(
+                isLastStep ? "START PLAYING!" : "NEXT →",
+                Color.rgb(0, 255, 100)
+        );
+        nextButton.setOnAction(e -> {
+            if (isLastStep) {
+                closeTutorial();
+            } else {
+                currentTutorialStep++;
+                updateTutorialStep();
+            }
+        });
+        buttonBox.getChildren().add(nextButton);
+
+        // Skip button
+        Button skipButton = createTutorialButton("SKIP TUTORIAL", Color.rgb(255, 100, 100));
+        skipButton.setOnAction(e -> closeTutorial());
+
+        // Add all elements to card
+        tutorialCard.getChildren().addAll(
+                stepIndicator,
+                title,
+                description,
+                visualBox,
+                buttonBox,
+                new Region(), // Spacer
+                skipButton
+        );
+
+        // Entrance animation
+        tutorialCard.setScaleX(0.9);
+        tutorialCard.setScaleY(0.9);
+        tutorialCard.setOpacity(0);
+
+        FadeTransition fade = new FadeTransition(Duration.millis(300), tutorialCard);
+        fade.setFromValue(0);
+        fade.setToValue(1);
+
+        ScaleTransition scale = new ScaleTransition(Duration.millis(300), tutorialCard);
+        scale.setFromX(0.9);
+        scale.setFromY(0.9);
+        scale.setToX(1.0);
+        scale.setToY(1.0);
+
+        new ParallelTransition(fade, scale).play();
+    }
+
+    // Helper method to create tutorial buttons
+    private Button createTutorialButton(String text, Color color) {
+        Button button = new Button(text);
+        button.setFocusTraversable(false);
+        button.setMinWidth(180);
+        button.setMinHeight(45);
+        button.setMaxHeight(45);
+        button.setCursor(javafx.scene.Cursor.HAND);
+
+        String colorString = toRgbString(color);
+        String normalStyle =
+                "-fx-background-color: " + toRgbString(Color.rgb(
+                        (int)(color.getRed() * 255 * 0.3),
+                        (int)(color.getGreen() * 255 * 0.3),
+                        (int)(color.getBlue() * 255 * 0.3)
+                )) + ";" +
+                        "-fx-border-color: " + colorString + ";" +
+                        "-fx-border-width: 2;" +
+                        "-fx-border-radius: 25;" +
+                        "-fx-background-radius: 25;" +
+                        "-fx-text-fill: " + colorString + ";" +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-font-size: 16;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 30;" +
+                        "-fx-effect: dropshadow(gaussian, " + colorString + ", 10, 0.4, 0, 0);";
+
+        String hoverStyle =
+                "-fx-background-color: " + toRgbString(Color.rgb(
+                        (int)(color.getRed() * 255 * 0.5),
+                        (int)(color.getGreen() * 255 * 0.5),
+                        (int)(color.getBlue() * 255 * 0.5)
+                )) + ";" +
+                        "-fx-border-color: " + colorString + ";" +
+                        "-fx-border-width: 2;" +
+                        "-fx-border-radius: 25;" +
+                        "-fx-background-radius: 25;" +
+                        "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-family: 'Arial Black';" +
+                        "-fx-font-size: 16;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-padding: 12 30;" +
+                        "-fx-effect: dropshadow(gaussian, " + colorString + ", 15, 0.6, 0, 0);";
+
+        button.setStyle(normalStyle);
+        button.setOnMouseEntered(e -> button.setStyle(hoverStyle));
+        button.setOnMouseExited(e -> button.setStyle(normalStyle));
+
+        return button;
+    }
+    // Close tutorial
+    private void closeTutorial() {
+        if (tutorialStage != null) {
+            // Only mark as completed if:
+            // 1. User is logged in
+            // 2. Tutorial wasn't already completed
+            // 3. Tutorial was NOT manually opened (i.e., it was auto-triggered on level 1)
+            boolean wasManuallyOpened = tutorialStage.getUserData() instanceof Boolean
+                    ? (Boolean) tutorialStage.getUserData()
+                    : false;
+
+            if (currentUser != null && !tutorialCompleted && !wasManuallyOpened) {
+                tutorialCompleted = true;
+                saveTutorialStatusToSupabase();
+                System.out.println("[DEBUG] Tutorial completed and saved!");
+            }
+
+            tutorialActive = false;
+            tutorialStage.close();
+            tutorialStage = null;
+            isDialogOpen = false; // Reset dialog flag
+        }
+    }
+
+    private void saveTutorialStatusToSupabase() {
+        if (currentUser == null) return;
+
+        executor.submit(() -> {
+            try {
+                String levelsStr = String.join(",",
+                        unlockedLevels.stream()
+                                .map(String::valueOf)
+                                .sorted()
+                                .toList());
+
+                Map<String, Object> payload = Map.of(
+                        "unlocked_levels", levelsStr,
+                        "effects_muted", isEffectsMuted,
+                        "music_muted", isMusicMuted,
+                        "volume", audioVolume,
+                        "sprite_visible", isSpriteVisible,
+                        "tutorial_completed", tutorialCompleted  // Save tutorial status
+                );
+                String json = gson.toJson(payload);
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(SUPABASE_URL + "/rest/v1/profiles?username=eq." + currentUser))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .header("Content-Type", "application/json")
+                        .method("PATCH", HttpRequest.BodyPublishers.ofString(json))
+                        .build();
+
+                httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+
+            } catch (Exception e) {
+                System.err.println("Failed to save tutorial status to Supabase: " + e.getMessage());
+            }
+        });
+    }
+
     private void setupGameplayScreen() {
+        loadUserPreferencesSync();
+        System.out.println("[DEBUG] Setting up gameplay screen. skipBackConfirmation = " + skipBackConfirmation);
         root.getChildren().clear();
         root.setStyle("-fx-background-color: radial-gradient(center 50% 50%, radius 80%, #1C2526, #0A0E26);");
         primaryStage.setTitle("Chroma Flood - Level " + currentLevel.get());
@@ -11019,22 +12010,22 @@ public class ChromaFloodSystem extends Application {
         gridContainer.setAlignment(Pos.CENTER);
 
         // Calculate dimensions of the GridPane (based on tile size and gaps)
-        double tileSize = 60.0; // Tile width/height from Tile constructor
-        double hGap = 6.0; // GridPane hgap
-        double vGap = 6.0; // GridPane vgap
+        double tileSize = 60.0;
+        double hGap = 6.0;
+        double vGap = 6.0;
         double gridWidth = COLS * tileSize + (COLS - 1) * hGap;
         double gridHeight = ROWS * tileSize + (ROWS - 1) * vGap;
 
         // Create a Rectangle for the border/background
-        double borderPadding = 12.0; // Space between grid and border edge
+        double borderPadding = 12.0;
         Rectangle borderRect = new Rectangle(
                 gridWidth + 2 * borderPadding,
                 gridHeight + 2 * borderPadding
         );
-        borderRect.setFill(Color.web("#1A1A1A")); // Dark background to blend with game
-        borderRect.setStroke(targetColor.getFxColor()); // NEW: Use targetColor for stroke
-        borderRect.setStrokeWidth(5.0);        // Thicker, visible border
-        borderRect.setArcWidth(20.0);          // Smooth corners
+        borderRect.setFill(Color.web("#1A1A1A"));
+        borderRect.setStroke(targetColor.getFxColor());
+        borderRect.setStrokeWidth(5.0);
+        borderRect.setArcWidth(20.0);
         borderRect.setArcHeight(20.0);
 
         DropShadow borderShadow = new DropShadow();
@@ -11044,7 +12035,6 @@ public class ChromaFloodSystem extends Application {
         borderShadow.setColor(Color.rgb(0, 0, 0, 0.9));
         borderRect.setEffect(borderShadow);
 
-        // Add Rectangle and GridPane to StackPane (Rectangle behind)
         gridContainer.getChildren().addAll(borderRect, grid);
 
         Label movesLabel = new Label("Moves: ");
@@ -11079,11 +12069,7 @@ public class ChromaFloodSystem extends Application {
             orb.setStroke(Color.TRANSPARENT);
             orb.setStrokeWidth(2);
             Polygon arrow = new Polygon();
-            arrow.getPoints().addAll(
-                    10.0, 0.0,  // Top-right
-                    0.0, 5.0,   // Left tip
-                    10.0, 10.0  // Bottom-right
-            );
+            arrow.getPoints().addAll(10.0, 0.0, 0.0, 5.0, 10.0, 10.0);
             arrow.setFill(Color.WHITE);
             arrow.setVisible(color == ColorType.BLUE);
             arrow.setEffect(null);
@@ -11167,23 +12153,29 @@ public class ChromaFloodSystem extends Application {
         backButton.setFocusTraversable(false);
         backButton.setStyle("-fx-background-color: rgba(0, 0, 0, 0.5); -fx-text-fill: #44DDFF; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #44DDFF; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44DDFF, 8, 0.6, 0, 0); -fx-focus-color: transparent; -fx-faint-focus-color: transparent;");
         backButton.setOnAction(event -> {
-            if (backButton.isDisabled()) return; // Prevent spam clicking
-            backButton.setDisable(true); // Disable button immediately
+            if (backButton.isDisabled()) return;
 
-            if (floodFillTimeline != null) {
-                floodFillTimeline.stop();
-                floodFillTimeline = null;
+            // Check if user wants to skip confirmation
+            if (skipBackConfirmation) {
+                backButton.setDisable(true);
+                if (floodFillTimeline != null) {
+                    floodFillTimeline.stop();
+                    floodFillTimeline = null;
+                }
+                if (clickSound != null) {
+                    clickSound.stop();
+                }
+                isAnimating = false;
+                animateGridExplosion(() -> showLevelSelectScreen());
+            } else {
+                showBackConfirmationModal(backButton);
             }
-            if (clickSound != null) {
-                clickSound.stop();
-            }
-            isAnimating = false;
-            animateGridExplosion(() -> showLevelSelectScreen());
         });
+
         backButton.setOnMouseEntered(event -> backButton.setStyle("-fx-background-color: rgba(68, 221, 255, 0.15); -fx-text-fill: #66EEFF; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #66EEFF; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44DDFF, 8, 0.5, 0, 0); -fx-focus-color: transparent; -fx-faint-focus-color: transparent;"));
         backButton.setOnMouseExited(event -> backButton.setStyle("-fx-background-color: rgba(0, 0, 0, 0.5); -fx-text-fill: #44DDFF; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #44DDFF; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44DDFF, 8, 0.6, 0, 0); -fx-focus-color: transparent; -fx-faint-focus-color: transparent;"));
 
-        Button volumeButton = new Button("🔊");
+        Button volumeButton = new Button("⚙");
         volumeButton.setFocusTraversable(false);
         volumeButton.setStyle("-fx-background-color: rgba(0, 0, 0, 0.5); -fx-text-fill: #44FF88; -fx-font-family: 'Arial Black'; -fx-font-size: 14; -fx-font-weight: bold; -fx-background-radius: 15; -fx-padding: 10 20; -fx-border-color: #44FF88; -fx-border-width: 2; -fx-border-radius: 15; -fx-effect: dropshadow(gaussian, #44FF88, 8, 0.6, 0, 0); -fx-min-width: 50; -fx-focus-color: transparent; -fx-faint-focus-color: transparent;");
         volumeButton.setOnAction(event -> showSettingsDialog());
@@ -11207,10 +12199,277 @@ public class ChromaFloodSystem extends Application {
         BorderPane.setMargin(buttonBox, new Insets(30, 30, 50, 0));
 
         checkSuccess();
+        if (currentUser != null && !tutorialCompleted && currentLevel.get() == 1) {
+            Platform.runLater(() -> showTutorial());
+        }
 
         animateGridEntrance();
     }
 
+    private void loadUserPreferencesSync() {
+        if (currentUser == null) return;
+
+        try {
+            // Add tutorial_completed to the select query
+            String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + currentUser
+                    + "&select=skip_back_confirmation,tutorial_completed";
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("apikey", SUPABASE_ANON_KEY)
+                    .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                JsonArray array = gson.fromJson(response.body(), JsonArray.class);
+                if (array.size() > 0) {
+                    JsonObject userData = array.get(0).getAsJsonObject();
+
+                    // Load skip_back_confirmation
+                    skipBackConfirmation = userData.has("skip_back_confirmation")
+                            ? userData.get("skip_back_confirmation").getAsBoolean()
+                            : false;
+
+                    // Load tutorial_completed
+                    if (userData.has("tutorial_completed") && !userData.get("tutorial_completed").isJsonNull()) {
+                        tutorialCompleted = userData.get("tutorial_completed").getAsBoolean();
+                        System.out.println("[LOAD SYNC] Loaded tutorial_completed: " + tutorialCompleted);
+                    } else {
+                        tutorialCompleted = false; // Default if not found
+                    }
+
+                    System.out.println("[LOAD SYNC] Loaded skip_back_confirmation: " + skipBackConfirmation);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[ERROR] Failed to load user preferences: " + e.getMessage());
+            skipBackConfirmation = false; // Safe default on error
+            tutorialCompleted = false; // Safe default on error
+        }
+    }
+
+    private void showBackConfirmationModal(Button backButton) {
+        Stage modal = new Stage();
+        modal.initOwner(primaryStage);
+        modal.initModality(Modality.WINDOW_MODAL);
+        modal.initStyle(StageStyle.TRANSPARENT);
+
+        StackPane borderContainer = new StackPane();
+        borderContainer.setStyle("-fx-background-color: transparent;");
+
+        Rectangle leftBorder = new Rectangle(3, 0);
+        leftBorder.setFill(Color.CYAN);
+        StackPane.setAlignment(leftBorder, Pos.CENTER_LEFT);
+
+        Rectangle rightBorder = new Rectangle(3, 0);
+        rightBorder.setFill(Color.CYAN);
+        StackPane.setAlignment(rightBorder, Pos.CENTER_RIGHT);
+
+        Rectangle topBorder = new Rectangle(0, 3);
+        topBorder.setFill(Color.CYAN);
+        StackPane.setAlignment(topBorder, Pos.TOP_CENTER);
+
+        Rectangle bottomBorder = new Rectangle(0, 3);
+        bottomBorder.setFill(Color.CYAN);
+        StackPane.setAlignment(bottomBorder, Pos.BOTTOM_CENTER);
+
+        VBox card = new VBox(25);
+        card.setAlignment(Pos.CENTER);
+        card.setPadding(new Insets(50, 80, 50, 80));
+        card.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #0a0e1a 0%, #1a1f35 100%);" +
+                        "-fx-effect: dropshadow(gaussian, rgba(0,255,255,0.25), 12, 0.4, 0, 0)," +
+                        "dropshadow(gaussian, rgba(68,221,255,0.2), 15, 0.3, 0, 0);"
+        );
+
+        Timeline rgbAnimation = new Timeline(
+                new KeyFrame(Duration.ZERO,
+                        new KeyValue(leftBorder.fillProperty(), Color.rgb(0, 255, 255)),
+                        new KeyValue(rightBorder.fillProperty(), Color.rgb(0, 255, 255)),
+                        new KeyValue(topBorder.fillProperty(), Color.rgb(0, 255, 255)),
+                        new KeyValue(bottomBorder.fillProperty(), Color.rgb(0, 255, 255))
+                ),
+                new KeyFrame(Duration.seconds(1),
+                        new KeyValue(leftBorder.fillProperty(), Color.rgb(68, 221, 255)),
+                        new KeyValue(rightBorder.fillProperty(), Color.rgb(68, 221, 255)),
+                        new KeyValue(topBorder.fillProperty(), Color.rgb(68, 221, 255)),
+                        new KeyValue(bottomBorder.fillProperty(), Color.rgb(68, 221, 255))
+                ),
+                new KeyFrame(Duration.seconds(2),
+                        new KeyValue(leftBorder.fillProperty(), Color.rgb(0, 170, 255)),
+                        new KeyValue(rightBorder.fillProperty(), Color.rgb(0, 170, 255)),
+                        new KeyValue(topBorder.fillProperty(), Color.rgb(0, 170, 255)),
+                        new KeyValue(bottomBorder.fillProperty(), Color.rgb(0, 170, 255))
+                ),
+                new KeyFrame(Duration.seconds(3),
+                        new KeyValue(leftBorder.fillProperty(), Color.rgb(0, 255, 255)),
+                        new KeyValue(rightBorder.fillProperty(), Color.rgb(0, 255, 255)),
+                        new KeyValue(topBorder.fillProperty(), Color.rgb(0, 255, 255)),
+                        new KeyValue(bottomBorder.fillProperty(), Color.rgb(0, 255, 255))
+                )
+        );
+        rgbAnimation.setCycleCount(Timeline.INDEFINITE);
+        rgbAnimation.play();
+
+        leftBorder.setEffect(new DropShadow(10.0, Color.CYAN));
+        rightBorder.setEffect(new DropShadow(10.0, Color.CYAN));
+        topBorder.setEffect(new DropShadow(10.0, Color.CYAN));
+        bottomBorder.setEffect(new DropShadow(10.0, Color.CYAN));
+
+        borderContainer.getChildren().addAll(card, leftBorder, rightBorder, topBorder, bottomBorder);
+
+        Label title = new Label("⚠ LEAVE LEVEL? ⚠");
+        title.setStyle(
+                "-fx-text-fill: #44DDFF;" +
+                        "-fx-font-family: 'Arial Black', 'Impact';" +
+                        "-fx-font-size: 32;" +
+                        "-fx-font-weight: bold;" +
+                        "-fx-effect: dropshadow(gaussian, #44DDFF, 5, 0.3, 0, 0);"
+        );
+
+        Label message = new Label("Your progress on this level will be lost.\nAre you sure you want to go back?");
+        message.setStyle(
+                "-fx-text-fill: #FFFFFF;" +
+                        "-fx-font-size: 18;" +
+                        "-fx-line-spacing: 5;" +
+                        "-fx-text-alignment: center;"
+        );
+        message.setTextAlignment(TextAlignment.CENTER);
+        message.setWrapText(true);
+
+        CheckBox dontAskCheckBox = new CheckBox("Don't ask me again");
+        dontAskCheckBox.setStyle(
+                "-fx-text-fill: #AAAAAA;" +
+                        "-fx-font-size: 14;" +
+                        "-fx-font-weight: bold;"
+        );
+        dontAskCheckBox.setSelected(false);
+
+        dontAskCheckBox.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal) {
+                dontAskCheckBox.setStyle(
+                        "-fx-text-fill: #44DDFF;" +
+                                "-fx-font-size: 14;" +
+                                "-fx-font-weight: bold;"
+                );
+            } else {
+                dontAskCheckBox.setStyle(
+                        "-fx-text-fill: #AAAAAA;" +
+                                "-fx-font-size: 14;" +
+                                "-fx-font-weight: bold;"
+                );
+            }
+        });
+
+        HBox buttonBox = new HBox(25);
+        buttonBox.setAlignment(Pos.CENTER);
+
+        Button yesButton = createNeonButton("✓ YES, GO BACK", "#44DDFF", "#2288CC");
+        Button noButton = createNeonButton("✗ STAY HERE", "#FF5555", "#AA0000");
+
+        yesButton.setOnAction(e -> {
+            // Save preference FIRST if checkbox is selected
+            if (dontAskCheckBox.isSelected()) {
+                skipBackConfirmation = true;
+                // Save synchronously in background, but update local variable immediately
+                saveBackConfirmationPreference(true);
+            }
+
+            modal.close();
+            backButton.setDisable(true);
+
+            if (floodFillTimeline != null) {
+                floodFillTimeline.stop();
+                floodFillTimeline = null;
+            }
+            if (clickSound != null) {
+                clickSound.stop();
+            }
+            isAnimating = false;
+            animateGridExplosion(() -> showLevelSelectScreen());
+        });
+
+        noButton.setOnAction(e -> {
+            // Save preference FIRST if checkbox is selected
+            if (dontAskCheckBox.isSelected()) {
+                skipBackConfirmation = true;
+                // Save synchronously in background, but update local variable immediately
+                saveBackConfirmationPreference(true);
+            }
+            modal.close();
+        });
+
+        noButton.setOnAction(e -> {
+            // Save preference if checkbox is checked
+            if (dontAskCheckBox.isSelected()) {
+                skipBackConfirmation = true;
+                saveBackConfirmationPreference(true);
+            }
+            modal.close();
+        });
+
+        buttonBox.getChildren().addAll(yesButton, noButton);
+
+        card.getChildren().addAll(title, message, dontAskCheckBox, buttonBox);
+
+        Scene scene = new Scene(borderContainer);
+        scene.setFill(Color.TRANSPARENT);
+        modal.setScene(scene);
+
+        modal.setOnShown(e -> {
+            leftBorder.setHeight(card.getHeight());
+            rightBorder.setHeight(card.getHeight());
+            topBorder.setWidth(card.getWidth());
+            bottomBorder.setWidth(card.getWidth());
+
+            double x = primaryStage.getX() + (primaryStage.getWidth() - modal.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - modal.getHeight()) / 2;
+            modal.setX(x);
+            modal.setY(y);
+        });
+
+        modal.show();
+    }
+
+    // NEW METHOD: Save back confirmation preference to Supabase
+    private void saveBackConfirmationPreference(boolean skip) {
+        // UPDATE LOCAL VARIABLE IMMEDIATELY - This is the key fix!
+        this.skipBackConfirmation = skip;
+        System.out.println("[LOCAL] skipBackConfirmation set to: " + skip);
+
+        // Then save to database asynchronously
+        executor.submit(() -> {
+            try {
+                String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + currentUser;
+
+                JsonObject updates = new JsonObject();
+                updates.addProperty("skip_back_confirmation", skip);
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .header("Content-Type", "application/json")
+                        .header("Prefer", "return=minimal")
+                        .method("PATCH", HttpRequest.BodyPublishers.ofString(gson.toJson(updates)))
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() == 200 || response.statusCode() == 204) {
+                    System.out.println("[SAVE] Back confirmation preference saved to DB: " + skip);
+                } else {
+                    System.err.println("[ERROR] Failed to save preference. Status: " + response.statusCode());
+                }
+            } catch (Exception e) {
+                System.err.println("[ERROR] Failed to save back confirmation preference: " + e.getMessage());
+                e.printStackTrace();
+            }
+        });
+    }
 
     private void animateGridEntrance() {
         ParallelTransition parallelTransition = new ParallelTransition();
@@ -11331,165 +12590,239 @@ public class ChromaFloodSystem extends Application {
     private void showSettingsDialog() {
         settingsProfileView = new ImageView(currentProfileImage);
 
-        // Create new Stage window if it doesn't exist
-        if (audioSettingsStage == null) {
-            audioSettingsStage = new Stage();
-            audioSettingsStage.initOwner(primaryStage);
-            audioSettingsStage.initModality(Modality.WINDOW_MODAL);
-            audioSettingsStage.initStyle(StageStyle.TRANSPARENT);
-            audioSettingsStage.setTitle("Audio Settings");
-            audioSettingsStage.setResizable(false);
+        audioSettingsStage = new Stage();
+        audioSettingsStage.initOwner(primaryStage);
+        audioSettingsStage.initModality(Modality.WINDOW_MODAL);
+        audioSettingsStage.initStyle(StageStyle.TRANSPARENT);
+        audioSettingsStage.setTitle("Settings");
+        audioSettingsStage.setResizable(false);
 
-            // Reset dialog flag when closed
-            audioSettingsStage.setOnHidden(e -> isDialogOpen = false);
+        audioSettingsStage.setOnHidden(e -> isDialogOpen = false);
 
-            // Outer container with transparent background
-            StackPane overlay = new StackPane();
-            overlay.setStyle("-fx-background-color: transparent;");
-            overlay.setPadding(new Insets(40));
+        StackPane overlay = new StackPane();
+        overlay.setStyle("-fx-background-color: transparent;");
+        overlay.setPadding(new Insets(40));
 
-            // Main container with gradient background
-            VBox mainContainer = new VBox(25);
-            mainContainer.setPadding(new Insets(35, 40, 35, 40));
-            mainContainer.setStyle(
-                    "-fx-background-color: linear-gradient(to bottom right, #1a1a2e, #0f0f1e);" +
-                            "-fx-background-radius: 20;" +
-                            "-fx-effect: dropshadow(gaussian, rgba(100, 100, 255, 0.4), 25, 0.5, 0, 0);"
-            );
-            mainContainer.setAlignment(Pos.CENTER);
+        VBox mainContainer = new VBox(20);
+        mainContainer.setPadding(new Insets(30, 35, 30, 35));
+        mainContainer.setStyle(
+                "-fx-background-color: linear-gradient(to bottom right, #1a1a2e, #0f0f1e);" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-effect: dropshadow(gaussian, rgba(100, 100, 255, 0.4), 25, 0.5, 0, 0);"
+        );
+        mainContainer.setAlignment(Pos.CENTER);
 
-            // Title
-            Label titleLabel = new Label("Audio Settings");
-            titleLabel.setStyle("-fx-text-fill: #FFFFFF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 24; -fx-font-weight: bold;");
+        Label titleLabel = new Label("Settings");
+        titleLabel.setStyle("-fx-text-fill: #FFFFFF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 24; -fx-font-weight: bold;");
 
-            // Content panel
-            VBox contentPanel = new VBox(20);
-            contentPanel.setAlignment(Pos.TOP_CENTER);
-            contentPanel.setPadding(new Insets(30, 35, 30, 35));
-            contentPanel.setStyle("-fx-background-color: rgba(30, 30, 45, 0.7); -fx-background-radius: 15; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.4), 15, 0, 0, 5);");
-            contentPanel.setPrefWidth(420);
+        HBox contentLayout = new HBox(30);
+        contentLayout.setAlignment(Pos.CENTER);
+        contentLayout.setPadding(new Insets(20));
 
-            // Effects Section
-            Label effectsHeader = new Label("Sound Effects");
-            effectsHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 15; -fx-font-weight: 600;");
+        // === LEFT SIDE: AUDIO SETTINGS ===
+        VBox audioPanel = new VBox(18);
+        audioPanel.setAlignment(Pos.TOP_CENTER);
+        audioPanel.setPadding(new Insets(25, 30, 25, 30));
+        audioPanel.setStyle("-fx-background-color: rgba(30, 30, 45, 0.7); -fx-background-radius: 15; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.4), 15, 0, 0, 5);");
+        audioPanel.setPrefWidth(320);
 
-            ToggleButton effectsMuteButton = new ToggleButton(isEffectsMuted ? "Muted" : "Unmuted");
-            effectsMuteButton.setSelected(isEffectsMuted);
-            effectsMuteButton.setPrefWidth(180);
-            styleModernToggle(effectsMuteButton);
-            applyToggleState(effectsMuteButton);
-            effectsMuteButton.setOnAction(event -> {
-                isEffectsMuted = effectsMuteButton.isSelected();
-                effectsMuteButton.setText(isEffectsMuted ? "Muted" : "Unmuted");
-                updateAudioSettings();
-            });
+        Label audioSectionHeader = new Label("Audio");
+        audioSectionHeader.setStyle("-fx-text-fill: #FFD700; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 18; -fx-font-weight: 700;");
 
-            VBox effectsBox = new VBox(12);
-            effectsBox.setAlignment(Pos.CENTER);
-            effectsBox.getChildren().addAll(effectsHeader, effectsMuteButton);
+        Label effectsHeader = new Label("Sound Effects");
+        effectsHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600;");
 
-            // Separator
-            Region separator1 = new Region();
-            separator1.setPrefHeight(1);
-            separator1.setMaxWidth(Double.MAX_VALUE);
-            separator1.setStyle("-fx-background-color: rgba(100, 100, 255, 0.2);");
+        ToggleButton effectsMuteButton = new ToggleButton(isEffectsMuted ? "Muted" : "Unmuted");
+        effectsMuteButton.setSelected(isEffectsMuted);
+        effectsMuteButton.setPrefWidth(160);
+        styleModernToggle(effectsMuteButton);
+        applyToggleState(effectsMuteButton);
+        effectsMuteButton.setOnAction(event -> {
+            isEffectsMuted = effectsMuteButton.isSelected();
+            effectsMuteButton.setText(isEffectsMuted ? "Muted" : "Unmuted");
+            updateAudioSettings();
+        });
 
-            // Music Section
-            Label musicHeader = new Label("Background Music");
-            musicHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 15; -fx-font-weight: 600;");
+        VBox effectsBox = new VBox(10);
+        effectsBox.setAlignment(Pos.CENTER);
+        effectsBox.getChildren().addAll(effectsHeader, effectsMuteButton);
 
-            ToggleButton musicMuteButton = new ToggleButton(isMusicMuted ? "Muted" : "Unmuted");
-            musicMuteButton.setSelected(isMusicMuted);
-            musicMuteButton.setPrefWidth(180);
-            styleModernToggle(musicMuteButton);
-            applyToggleState(musicMuteButton);
-            musicMuteButton.setOnAction(event -> {
-                isMusicMuted = musicMuteButton.isSelected();
-                musicMuteButton.setText(isMusicMuted ? "Muted" : "Unmuted");
-                updateAudioSettings();
-            });
+        Region separator1 = new Region();
+        separator1.setPrefHeight(1);
+        separator1.setMaxWidth(Double.MAX_VALUE);
+        separator1.setStyle("-fx-background-color: rgba(100, 100, 255, 0.2);");
 
-            VBox musicBox = new VBox(12);
-            musicBox.setAlignment(Pos.CENTER);
-            musicBox.getChildren().addAll(musicHeader, musicMuteButton);
+        Label musicHeader = new Label("Background Music");
+        musicHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600;");
 
-            // Separator
-            Region separator2 = new Region();
-            separator2.setPrefHeight(1);
-            separator2.setMaxWidth(Double.MAX_VALUE);
-            separator2.setStyle("-fx-background-color: rgba(100, 100, 255, 0.2);");
+        ToggleButton musicMuteButton = new ToggleButton(isMusicMuted ? "Muted" : "Unmuted");
+        musicMuteButton.setSelected(isMusicMuted);
+        musicMuteButton.setPrefWidth(160);
+        styleModernToggle(musicMuteButton);
+        applyToggleState(musicMuteButton);
+        musicMuteButton.setOnAction(event -> {
+            isMusicMuted = musicMuteButton.isSelected();
+            musicMuteButton.setText(isMusicMuted ? "Muted" : "Unmuted");
+            updateAudioSettings();
+        });
 
-            // Volume Section
-            Label volumeHeader = new Label("Master Volume");
-            volumeHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 15; -fx-font-weight: 600;");
+        VBox musicBox = new VBox(10);
+        musicBox.setAlignment(Pos.CENTER);
+        musicBox.getChildren().addAll(musicHeader, musicMuteButton);
 
-            Label volumeValue = new Label(String.format("%d%%", (int) (audioVolume * 100)));
-            volumeValue.setStyle("-fx-text-fill: #FFFFFF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 13; -fx-font-weight: 600;");
+        Region separator2 = new Region();
+        separator2.setPrefHeight(1);
+        separator2.setMaxWidth(Double.MAX_VALUE);
+        separator2.setStyle("-fx-background-color: rgba(100, 100, 255, 0.2);");
 
-            Slider volumeSlider = new Slider(0.0, 1.0, audioVolume);
-            volumeSlider.setShowTickMarks(false);
-            volumeSlider.setShowTickLabels(false);
-            volumeSlider.setPrefWidth(320);
-            volumeSlider.setStyle(
-                    "-fx-control-inner-background: rgba(40, 40, 60, 0.8);" +
-                            "-fx-accent: linear-gradient(to right, #00D9FF, #0099FF);" +
-                            "-fx-background-color: transparent;"
-            );
+        Label volumeHeader = new Label("Master Volume");
+        volumeHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600;");
 
-            volumeSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-                audioVolume = newValue.doubleValue();
-                volumeValue.setText(String.format("%d%%", (int) (audioVolume * 100)));
-                updateAudioSettings();
-            });
+        Label volumeValue = new Label(String.format("%d%%", (int) (audioVolume * 100)));
+        volumeValue.setStyle("-fx-text-fill: #FFFFFF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 13; -fx-font-weight: 600;");
 
-            HBox volumeHeaderBox = new HBox(10);
-            volumeHeaderBox.setAlignment(Pos.CENTER);
-            volumeHeaderBox.getChildren().addAll(volumeHeader, volumeValue);
+        Slider volumeSlider = new Slider(0.0, 1.0, audioVolume);
+        volumeSlider.setShowTickMarks(false);
+        volumeSlider.setShowTickLabels(false);
+        volumeSlider.setPrefWidth(240);
+        volumeSlider.setStyle(
+                "-fx-control-inner-background: rgba(40, 40, 60, 0.8);" +
+                        "-fx-accent: linear-gradient(to right, #00D9FF, #0099FF);" +
+                        "-fx-background-color: transparent;"
+        );
 
-            VBox volumeBox = new VBox(12);
-            volumeBox.setAlignment(Pos.CENTER);
-            volumeBox.getChildren().addAll(volumeHeaderBox, volumeSlider);
+        volumeSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            audioVolume = newValue.doubleValue();
+            volumeValue.setText(String.format("%d%%", (int) (audioVolume * 100)));
+            updateAudioSettings();
+        });
 
-            contentPanel.getChildren().addAll(
-                    effectsBox,
-                    separator1,
-                    musicBox,
-                    separator2,
-                    volumeBox
-            );
+        HBox volumeHeaderBox = new HBox(10);
+        volumeHeaderBox.setAlignment(Pos.CENTER);
+        volumeHeaderBox.getChildren().addAll(volumeHeader, volumeValue);
 
-            // Close Button
-            Button closeButton = new Button("Close");
-            closeButton.setStyle("-fx-background-color: rgba(60, 60, 80, 0.5); -fx-border-color: rgba(100, 100, 120, 0.6); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #AAAACC; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;");
-            closeButton.setPrefWidth(200);
-            closeButton.setOnAction(event -> audioSettingsStage.close());
+        VBox volumeBox = new VBox(10);
+        volumeBox.setAlignment(Pos.CENTER);
+        volumeBox.getChildren().addAll(volumeHeaderBox, volumeSlider);
 
-            closeButton.setOnMouseEntered(event -> closeButton.setStyle("-fx-background-color: rgba(70, 70, 90, 0.7); -fx-border-color: rgba(120, 120, 140, 0.8); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #CCCCEE; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;"));
-            closeButton.setOnMouseExited(event -> closeButton.setStyle("-fx-background-color: rgba(60, 60, 80, 0.5); -fx-border-color: rgba(100, 100, 120, 0.6); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #AAAACC; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;"));
+        audioPanel.getChildren().addAll(
+                audioSectionHeader,
+                effectsBox,
+                separator1,
+                musicBox,
+                separator2,
+                volumeBox
+        );
 
-            mainContainer.getChildren().addAll(titleLabel, contentPanel, closeButton);
+        // === RIGHT SIDE: DISPLAY & PREFERENCES SETTINGS ===
+        VBox displayPanel = new VBox(18);
+        displayPanel.setAlignment(Pos.TOP_CENTER);
+        displayPanel.setPadding(new Insets(25, 30, 25, 30));
+        displayPanel.setStyle("-fx-background-color: rgba(30, 30, 45, 0.7); -fx-background-radius: 15; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.4), 15, 0, 0, 5);");
+        displayPanel.setPrefWidth(320);
 
-            overlay.getChildren().add(mainContainer);
-            StackPane.setAlignment(mainContainer, Pos.CENTER);
+        Label displaySectionHeader = new Label("Display & Preferences");
+        displaySectionHeader.setStyle("-fx-text-fill: #FFD700; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 18; -fx-font-weight: 700;");
 
-            // Create scene with transparent background
-            Scene dialogScene = new Scene(overlay, 580, 630);
-            dialogScene.setFill(Color.TRANSPARENT);
+        // Sprite Visibility Section
+        Label spriteHeader = new Label("Character");
+        spriteHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600;");
 
-            audioSettingsStage.setScene(dialogScene);
+        ToggleButton spriteVisibilityButton = new ToggleButton(isSpriteVisible ? "Visible" : "Hidden");
+        spriteVisibilityButton.setSelected(!isSpriteVisible);
+        spriteVisibilityButton.setPrefWidth(160);
+        styleModernToggle(spriteVisibilityButton);
+        applyToggleState(spriteVisibilityButton);
+        spriteVisibilityButton.setOnAction(event -> {
+            isSpriteVisible = !spriteVisibilityButton.isSelected();
+            spriteVisibilityButton.setText(isSpriteVisible ? "Visible" : "Hidden");
+            updateSpriteVisibility();
+            saveProgress();
+        });
 
-            // Perfect centering
-            audioSettingsStage.setOnShown(e -> {
-                double x = primaryStage.getX() + (primaryStage.getWidth() - audioSettingsStage.getWidth()) / 2;
-                double y = primaryStage.getY() + (primaryStage.getHeight() - audioSettingsStage.getHeight()) / 2;
-                audioSettingsStage.setX(x);
-                audioSettingsStage.setY(y);
-            });
-        }
+        VBox spriteBox = new VBox(10);
+        spriteBox.setAlignment(Pos.CENTER);
+        spriteBox.getChildren().addAll(spriteHeader, spriteVisibilityButton);
 
-        // Show the stage window
+        // Separator
+        Region separator3 = new Region();
+        separator3.setPrefHeight(1);
+        separator3.setMaxWidth(Double.MAX_VALUE);
+        separator3.setStyle("-fx-background-color: rgba(100, 100, 255, 0.2);");
+
+        // Back Confirmation Section
+        Label backConfirmHeader = new Label("Back Button Confirmation");
+        backConfirmHeader.setStyle("-fx-text-fill: #00D9FF; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600;");
+
+        ToggleButton backConfirmButton = new ToggleButton(skipBackConfirmation ? "Disabled" : "Enabled");
+        backConfirmButton.setSelected(skipBackConfirmation);
+        backConfirmButton.setPrefWidth(160);
+        styleModernToggle(backConfirmButton);
+        applyToggleState(backConfirmButton);
+        backConfirmButton.setOnAction(event -> {
+            skipBackConfirmation = backConfirmButton.isSelected();
+            backConfirmButton.setText(skipBackConfirmation ? "Disabled" : "Enabled");
+            saveBackConfirmationPreference(skipBackConfirmation);
+        });
+
+        VBox backConfirmBox = new VBox(10);
+        backConfirmBox.setAlignment(Pos.CENTER);
+        backConfirmBox.getChildren().addAll(backConfirmHeader, backConfirmButton);
+
+        displayPanel.getChildren().addAll(
+                displaySectionHeader,
+                spriteBox,
+                separator3,
+                backConfirmBox
+        );
+
+        contentLayout.getChildren().addAll(audioPanel, displayPanel);
+
+        Button closeButton = new Button("Close");
+        closeButton.setStyle("-fx-background-color: rgba(60, 60, 80, 0.5); -fx-border-color: rgba(100, 100, 120, 0.6); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #AAAACC; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;");
+        closeButton.setPrefWidth(200);
+        closeButton.setOnAction(event -> audioSettingsStage.close());
+
+        closeButton.setOnMouseEntered(event -> closeButton.setStyle("-fx-background-color: rgba(70, 70, 90, 0.7); -fx-border-color: rgba(120, 120, 140, 0.8); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #CCCCEE; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;"));
+        closeButton.setOnMouseExited(event -> closeButton.setStyle("-fx-background-color: rgba(60, 60, 80, 0.5); -fx-border-color: rgba(100, 100, 120, 0.6); -fx-border-width: 1.5; -fx-border-radius: 10; -fx-background-radius: 10; -fx-text-fill: #AAAACC; -fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14; -fx-font-weight: 600; -fx-padding: 13 35; -fx-cursor: hand;"));
+
+        mainContainer.getChildren().addAll(titleLabel, contentLayout, closeButton);
+
+        overlay.getChildren().add(mainContainer);
+        StackPane.setAlignment(mainContainer, Pos.CENTER);
+
+        Scene dialogScene = new Scene(overlay, 860, 660);
+        dialogScene.setFill(Color.TRANSPARENT);
+
+        audioSettingsStage.setScene(dialogScene);
+
+        audioSettingsStage.setOnShown(e -> {
+            double x = primaryStage.getX() + (primaryStage.getWidth() - audioSettingsStage.getWidth()) / 2;
+            double y = primaryStage.getY() + (primaryStage.getHeight() - audioSettingsStage.getHeight()) / 2;
+            audioSettingsStage.setX(x);
+            audioSettingsStage.setY(y);
+        });
+
         audioSettingsStage.show();
         audioSettingsStage.requestFocus();
+    }
+
+    // Add this new method to handle sprite visibility
+    private void updateSpriteVisibility() {
+        if (spriteContainer != null) {
+            if (isSpriteVisible) {
+                spriteContainer.setVisible(true);
+                spriteContainer.setOpacity(0);
+                FadeTransition fadeIn = new FadeTransition(Duration.millis(300), spriteContainer);
+                fadeIn.setToValue(1.0);
+                fadeIn.play();
+            } else {
+                FadeTransition fadeOut = new FadeTransition(Duration.millis(300), spriteContainer);
+                fadeOut.setToValue(0);
+                fadeOut.setOnFinished(e -> spriteContainer.setVisible(false));
+                fadeOut.play();
+            }
+        }
     }
 
     private void closeAudioSettingsIfOpen() {
@@ -12332,9 +13665,15 @@ public class ChromaFloodSystem extends Application {
 
     // Modified checkSuccess method - replace the success Platform.runLater block with:
     private void checkSuccess() {
-        if (isCheckingSuccess || isTransitioning) {
+        if (isCheckingSuccess || isTransitioning || justHandledGameEnd) {
             return;
         }
+
+        // NEW: Don't check success if connection dialog is showing
+        if (connectionLostStage != null && connectionLostStage.isShowing()) {
+            return;
+        }
+
         isCheckingSuccess = true;
         try {
             boolean allTarget = true;
@@ -12349,6 +13688,12 @@ public class ChromaFloodSystem extends Application {
             }
             if (allTarget) {
                 Platform.runLater(() -> {
+                    // NEW: Double-check before showing success
+                    if (connectionLostStage != null && connectionLostStage.isShowing()) {
+                        System.out.println("Connection dialog is open, delaying success screen");
+                        return;
+                    }
+
                     System.out.println("Showing success page for level " + currentLevel.get());
                     double completionTime = (System.currentTimeMillis() - levelStartTime) / 1000.0;
                     int current = currentLevel.get();
@@ -12369,11 +13714,20 @@ public class ChromaFloodSystem extends Application {
                     extraMoves = 0;
                     selectedColor = ColorType.BLUE;
 
-                    // Animate grid color drain before showing success page
-                    // Close any open dialogs before showing success page
+                    // Close ALL open dialogs before showing success page
                     closeAudioSettingsIfOpen();
                     if (profileSettingsStage != null && profileSettingsStage.isShowing()) {
                         profileSettingsStage.close();
+                    }
+                    // Close connection modal if it's open
+                    if (connectionLostStage != null && connectionLostStage.isShowing()) {
+                        connectionLostStage.close();
+                        connectionLostStage = null;
+                    }
+                    // Stop reconnect timer if running
+                    if (reconnectCheckTimer != null) {
+                        reconnectCheckTimer.stop();
+                        reconnectCheckTimer = null;
                     }
 
                     // Animate grid color drain before showing success page
@@ -12383,7 +13737,25 @@ public class ChromaFloodSystem extends Application {
                 });
             } else if (movesRemaining.get() <= 0) {
                 Platform.runLater(() -> {
+                    // NEW: Double-check before showing failure
+                    if (connectionLostStage != null && connectionLostStage.isShowing()) {
+                        System.out.println("Connection dialog is open, delaying failure modal");
+                        return;
+                    }
+
                     System.out.println("No moves remaining → showing neon modal");
+
+                    // Close connection modal before showing failure modal
+                    if (connectionLostStage != null && connectionLostStage.isShowing()) {
+                        connectionLostStage.close();
+                        connectionLostStage = null;
+                    }
+                    // Stop reconnect timer if running
+                    if (reconnectCheckTimer != null) {
+                        reconnectCheckTimer.stop();
+                        reconnectCheckTimer = null;
+                    }
+
                     showFailureModal();
                 });
             }
@@ -12456,6 +13828,8 @@ public class ChromaFloodSystem extends Application {
         if (leaderboardStage != null && leaderboardStage.isShowing()) {
             leaderboardStage.close();
         }
+
+        justHandledGameEnd = true;
 
         Stage modal = new Stage();
         modal.initOwner(primaryStage);
@@ -12611,6 +13985,7 @@ public class ChromaFloodSystem extends Application {
             yes.setOnAction(e -> {
                 extraMoves++;
                 lossCount = 0;
+                justHandledGameEnd = false;
                 modal.close();
                 initializeGrid(this, currentLevel.get());
                 updatePaletteVisuals();
@@ -12618,6 +13993,7 @@ public class ChromaFloodSystem extends Application {
 
             no.setOnAction(e -> {
                 lossCount = 0;
+                justHandledGameEnd = false;
                 modal.close();
                 initializeGrid(this, currentLevel.get());
                 updatePaletteVisuals();
@@ -12630,6 +14006,7 @@ public class ChromaFloodSystem extends Application {
         } else {
             Button restart = createNeonButton("↻ RESTART LEVEL", "#4488FF", "#2255CC");
             restart.setOnAction(e -> {
+                justHandledGameEnd = false;
                 modal.close();
                 initializeGrid(this, currentLevel.get());
                 updatePaletteVisuals();
