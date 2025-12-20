@@ -173,6 +173,8 @@ public class ChromaFloodSystem extends Application {
     private Timeline reconnectCheckTimer = null;
     private Label reconnectStatusLabel = null;
     private Stage tutorialStage;
+    private Timeline banCheckTimer;
+    private static final long BAN_CHECK_INTERVAL_MS = 120000;
     private boolean tutorialActive = false;
     private boolean skipBackConfirmation = false;
     private int currentTutorialStep = 0;
@@ -2312,6 +2314,98 @@ public class ChromaFloodSystem extends Application {
                     pause.play();
                     e.printStackTrace();
                 });
+            }
+        });
+    }
+
+    private void startBanStatusMonitoring() {
+        if (banCheckTimer != null) {
+            banCheckTimer.stop();
+        }
+
+        banCheckTimer = new Timeline(new KeyFrame(Duration.millis(BAN_CHECK_INTERVAL_MS), event -> {
+            checkBanStatus();
+        }));
+        banCheckTimer.setCycleCount(Animation.INDEFINITE);
+        banCheckTimer.play();
+
+        System.out.println("[SECURITY] Started ban status monitoring for user: " + currentUser);
+    }
+
+    // Call this method when user logs out
+    private void stopBanStatusMonitoring() {
+        if (banCheckTimer != null) {
+            banCheckTimer.stop();
+            banCheckTimer = null;
+            System.out.println("[SECURITY] Stopped ban status monitoring");
+        }
+    }
+
+    // Check if current user is banned
+    private void checkBanStatus() {
+        if (currentUser == null || currentUser.isEmpty()) {
+            return;
+        }
+
+        executor.submit(() -> {
+            try {
+                String url = SUPABASE_URL + "/rest/v1/profiles?username=eq." + currentUser
+                        + "&select=banned,ban_reason,appeal_status";
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("apikey", SUPABASE_ANON_KEY)
+                        .header("Authorization", "Bearer " + SUPABASE_ANON_KEY)
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() == 200) {
+                    String body = response.body();
+                    if (body != null && !body.trim().isEmpty() && !body.equals("[]")) {
+                        JsonArray array = gson.fromJson(body, JsonArray.class);
+                        if (array.size() > 0) {
+                            JsonObject userData = array.get(0).getAsJsonObject();
+                            boolean isBanned = userData.has("banned") && userData.get("banned").getAsBoolean();
+
+                            if (isBanned) {
+                                String banReason = userData.has("ban_reason") && !userData.get("ban_reason").isJsonNull()
+                                        ? userData.get("ban_reason").getAsString()
+                                        : "No reason provided";
+
+                                boolean hasAppeal = userData.has("appeal_submitted") && userData.get("appeal_submitted").getAsBoolean();
+                                String appealStatus = userData.has("appeal_status") && !userData.get("appeal_status").isJsonNull()
+                                        ? userData.get("appeal_status").getAsString()
+                                        : "none";
+
+                                // User was banned while playing - force logout
+                                Platform.runLater(() -> {
+                                    System.out.println("[SECURITY] User " + currentUser + " was banned during session. Forcing logout.");
+                                    stopBanStatusMonitoring();
+
+                                    // Store username before clearing
+                                    String bannedUsername = currentUser;
+
+                                    // Clear user session
+                                    currentUser = null;
+                                    currentProfileImage = null;
+                                    deleteLoginToken();
+                                    clearUserProgressCache();
+
+                                    // Stop background audio
+                                    stopCurrentBackgroundAudio();
+
+                                    // Show ban dialog, then return to login
+                                    showBannedDialog(bannedUsername, banReason, hasAppeal, appealStatus);
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("[SECURITY] Failed to check ban status: " + e.getMessage());
+                // Don't log out on network errors - only on confirmed bans
             }
         });
     }
@@ -6814,6 +6908,8 @@ public class ChromaFloodSystem extends Application {
             bgAnim.stop();
             dialogStage.close();
             bannedDialogStage = null;
+            // After closing dialog, redirect to login
+            Platform.runLater(() -> showLoginScreen());
         });
         // Appeal button - show based on appeal status
         if (!hasAppeal) {
@@ -9854,6 +9950,8 @@ public class ChromaFloodSystem extends Application {
 
                 HttpResponse<String> resp = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
+                // In your executeBanAction() method, find this section:
+
                 Platform.runLater(() -> {
                     if (resp.statusCode() == 204 || resp.statusCode() == 200) {
                         showCustomSuccessDialog(
@@ -9908,19 +10006,22 @@ public class ChromaFloodSystem extends Application {
                                 if (banAppealsStage != null && banAppealsStage.isShowing()) {
                                     Platform.runLater(() -> loadAppealsPage());
                                 }
+                                // ADD THIS LINE - Reset modal flag after appeals are processed
+                                isModalDialogOpen = false;
                             });
 
                             // If ban appeals dialog is open, refresh it to show updated status
                             if (banAppealsStage != null && banAppealsStage.isShowing()) {
                                 Platform.runLater(() -> loadAppealsPage());
                             }
+                        } else {
+                            // ADD THIS ELSE BLOCK - Reset modal flag immediately for bans (no async appeals processing)
+                            isModalDialogOpen = false;
                         }
-                        // ==================================================================
-
                     } else {
                         new Alert(Alert.AlertType.ERROR,
                                 "Failed (" + resp.statusCode() + "):\n" + resp.body()).show();
-                        isModalDialogOpen = false;
+                        isModalDialogOpen = false; // This one was already there
                     }
                 });
             } catch (Exception ex) {
